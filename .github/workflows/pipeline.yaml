@@ -1,13 +1,10 @@
 name: Build firmware
 
-on:
-  push:
-    branches:
-      - master
+on:  
   workflow_dispatch: {}
 
 jobs:
-  bump-version-release-dev-apk:
+  build-firmware:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository code
