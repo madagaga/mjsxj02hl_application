@@ -7,7 +7,7 @@ LDPATH = /opt/hisi-linux/x86-arm/arm-himix100-linux/target/usr/app/lib
 CC  = $(CROSS_COMPILE)gcc
 CXX = $(CROSS_COMPILE)g++
 
-LDFLAGS = -pthread -llocalsdk -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lsceneauto -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lsns_f22 -lpaho-mqtt3c -lyyjson -lrtspserver -lstdc++
+LDFLAGS = -pthread -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lsceneauto -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lsns_f22 -lpaho-mqtt3c -lyyjson -lrtspserver -lstdc++
 
 OUTPUT = ./bin
 LIBDIR = ./lib
@@ -90,7 +90,7 @@ librtspserver.so:
 # APPLICATION OBJECTS #
 #######################
 
-objects: logger.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o
+objects: logger.o localsdk.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o
 
 logger.o: ./logger/logger.c
 	$(CC) $(CCFLAGS) -c ./logger/logger.c -o $(OUTPUT)/objects/logger.o
@@ -100,6 +100,9 @@ configs.o: ./configs/configs.c
 
 inih.o: ./configs/inih/ini.c
 	$(CC) $(CCFLAGS) -c ./configs/inih/ini.c -o $(OUTPUT)/objects/inih.o
+
+localsdk.o: ./localsdk/localsdk.c
+	$(CC) $(CCFLAGS) -c ./localsdk/localsdk.c -o $(OUTPUT)/objects/localsdk.o
 
 init.o: ./localsdk/init.c
 	$(CC) $(CCFLAGS) -c ./localsdk/init.c -o $(OUTPUT)/objects/init.o

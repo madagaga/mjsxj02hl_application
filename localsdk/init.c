@@ -21,6 +21,13 @@
 #include "./../configs/configs.h"
 #include "./../ipctool/src/tools.h"
 
+static int shellcall_func(const char *cmd) {
+    if (!cmd) {
+        return LOCALSDK_ERROR;
+    }
+    return (system(cmd) == 0) ? LOCALSDK_OK : LOCALSDK_ERROR;
+}
+
 // Read file into string
 static char *get_file_contents(char *filename) {
     char *file_contents = "";
@@ -104,8 +111,8 @@ bool all_init() {
     
     if(result &= (localsdk_set_logprintf_func(logprintf) == LOCALSDK_OK)) {
         LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "localsdk_set_logprintf_func()");
-        //if(result &= (localsdk_set_shellcall_func(shellcall_func) == LOCALSDK_OK)) { // FIXME
-            //LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "localsdk_set_shellcall_func()");
+        if(result &= (localsdk_set_shellcall_func((int *)shellcall_func) == LOCALSDK_OK)) {
+            LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "localsdk_set_shellcall_func()");
             if(result &= (localsdk_init() == LOCALSDK_OK)) {
                 LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "localsdk_init()");
                 if(result &= (localsdk_get_version() == LOCALSDK_CURRENT_VERSION)) {
@@ -130,7 +137,7 @@ bool all_init() {
                     } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "osd_init()");
                 } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "localsdk_get_version()");
             } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "localsdk_init()");
-        //} else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "localsdk_set_shellcall_func()");
+        } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "localsdk_set_shellcall_func()");
     } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "localsdk_set_logprintf_func()");
     
     // Free all if error occurred
