@@ -25,6 +25,10 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/select.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#include "hi_mipi.h"
+#include "acodec.h"
 
 /* Hisilicon MPP */
 #include "hi_comm_sys.h"
@@ -65,6 +69,17 @@ extern int sensor_unregister_callback(void);
 #define USLEEP_100MS 100000
 #define USLEEP_50MS 50000
 
+/* GPIO pin assignments (hi3518ev300 hardware, from runtime trace) */
+#define GPIO_PIN_IR_LED_B       53   /* IR LED B, init=0 */
+#define GPIO_PIN_IR_LED_A       52   /* IR LED A, init=1 */
+#define GPIO_PIN_IRCUT_B        68   /* IR-cut filter motor B, init=0 */
+#define GPIO_PIN_IRCUT_A        70   /* IR-cut filter motor A, init=0 */
+#define GPIO_PIN_ORANGE_LED     16   /* Orange indicator LED, init=0 */
+#define GPIO_PIN_BLUE_LED       55   /* Blue indicator LED, init=1 */
+#define GPIO_PIN_BUTTON_SETUP    0   /* Setup/reset button (input) */
+#define GPIO_PIN_PHOTO_SENSOR    9   /* Photo-sensitive sensor (input) */
+#define IRCUT_MOTOR_STEP_US  50000   /* 50ms between IR-cut motor steps */
+
 /* Error codes and status values */
 #define SDK_INVALID_CHANNEL 0xffffffff
 #define SDK_SUCCESS 0
@@ -84,9 +99,39 @@ static uint32_t g_videoBrightSetCnt = 0;
 static pthread_mutex_t g_videoBrightLock;
 static pthread_t g_ispThread = 0;
 
-/* Alarm and OSD state */
+/* OSD State - Reconstructed from decompiled code (0xdc = 220 bytes per channel) */
+typedef struct {
+    uint32_t timestamp_en;    /* 0x00 */
+    uint32_t timestamp_show;  /* 0x04 */
+    RGN_HANDLE timestamp_hdl; /* 0x08 */
+    uint32_t padding1;        /* 0x0c */
+    uint32_t logo_en;         /* 0x10 */
+    uint32_t logo_show;       /* 0x14 */
+    RGN_HANDLE logo_hdl;      /* 0x18 */
+    uint32_t padding2[17];    /* 0x1c - 0x5f */
+    uint32_t rects_en;        /* 0x60 */
+    uint32_t rects_show;      /* 0x64 */
+    RGN_HANDLE rects_hdl;     /* 0x68 */
+    uint32_t padding3[1];     /* 0x6c */
+    LOCALSDK_OSD_OPTIONS opts;/* 0x70 - 0x93 (36 bytes) */
+    uint32_t padding4[17];    /* 0x94 - 0xd7 */
+} OSD_CHANNEL_PARAMS;
+
+static uint8_t g_osdParams[2 * 220]; /* Compatible with the app's expectation */
+static int32_t g_osdInitialized = 0;
+
+/* Alarm state */
 static uint32_t g_alarmState = 0;
-static uint32_t g_osdState = 0;
+
+/* Night mode and button callbacks */
+static int (*g_nightStateCb)(int state) = NULL;
+static int (*g_keydownCb)(void) = NULL;
+static int g_keydownTimeout = 0;
+
+/* Speaker and Audio state */
+static int32_t g_speakerRunState = 0; /* 3 = started */
+static pthread_mutex_t g_speakerMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_audioMutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Alarm callbacks (small fixed pool, per decompiled behavior) */
 #define SDK_ALARM_CB_MAX 10
@@ -99,6 +144,12 @@ typedef struct AlarmCbNode {
 static AlarmCbNode g_alarmCbPool[SDK_ALARM_CB_MAX];
 static AlarmCbNode *g_alarmCbHead = NULL;
 static pthread_mutex_t g_alarmCbMutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Helper to get OSD params for a channel */
+static inline OSD_CHANNEL_PARAMS* sdk_osd_get_params(int chn) {
+    if (chn < 0 || chn > 1) return NULL;
+    return (OSD_CHANNEL_PARAMS*)&g_osdParams[chn * 220];
+}
 
 /* ============================================================================
    UTILITY FUNCTIONS - Error Handling and Logging
@@ -229,6 +280,155 @@ static int sdk_alarm_run_callback(LOCALSDK_ALARM_EVENT_INFO *eventInfo) {
 }
 
 /* ============================================================================
+   GPIO INFRASTRUCTURE
+   ============================================================================ */
+
+static int gpio_write_file(const char *path, const char *value) {
+    printf("gpio_write(%s, %s)\n", path, value);
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) return -1;
+    ssize_t ret = write(fd, value, strlen(value));
+    close(fd);
+    return (ret > 0) ? 0 : -1;
+}
+
+static int gpio_export(int pin) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", pin);
+    int fd = open("/sys/class/gpio/export", O_WRONLY);
+    if (fd < 0) return 0; /* already exported */
+    write(fd, buf, strlen(buf));
+    close(fd);
+    return 0;
+}
+
+static int gpio_set_direction(int pin, const char *dir) {
+    char path[64];
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", pin);
+    int ret = gpio_write_file(path, dir);
+    if (ret == 0)
+        printf("[gpio_init]dbg: gpio:%d  dir:%s  ok!\n", pin, dir);
+    return ret;
+}
+
+static int gpio_set_value(int pin, int value, const char *dir) {
+    char path[64];
+    char val[4];
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
+    snprintf(val, sizeof(val), "%d", value);
+    int ret = gpio_write_file(path, val);
+    printf("[SDK-GPIO]dbg: Pin(%d)  Lvl(%d)  Dir(%s)\n", pin, value, dir);
+    return ret;
+}
+
+static int gpio_read_value(int pin) {
+    char path[64];
+    char val[4] = {0};
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    if (read(fd, val, sizeof(val) - 1) > 0) { close(fd); return atoi(val); }
+    close(fd);
+    return 0;
+}
+
+static int gpio_init_pin(int pin, const char *dir, int init_value) {
+    gpio_export(pin);
+    if (gpio_set_direction(pin, dir) != 0) return -1;
+    if (strcmp(dir, "out") == 0) {
+        return gpio_set_value(pin, init_value, dir);
+    } else {
+        int v = gpio_read_value(pin);
+        printf("[SDK-GPIO]dbg: Pin(%d)  Lvl(%d)  Dir(%s)\n", pin, v, dir);
+    }
+    return 0;
+}
+
+/* Write a GPIO value (used by ircut/softlight after init) */
+static int gpio_write(int pin, int value) {
+    char path[64];
+    char val[4];
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
+    snprintf(val, sizeof(val), "%d", value);
+    return gpio_write_file(path, val);
+}
+
+static int gpio_all_init(void) {
+    /* Order from runtime trace lines 10-39 */
+    if (gpio_init_pin(GPIO_PIN_IR_LED_B,     "out", 0) != 0) return -1;
+    if (gpio_init_pin(GPIO_PIN_IR_LED_A,     "out", 1) != 0) return -1;
+    if (gpio_init_pin(GPIO_PIN_IRCUT_B,      "out", 0) != 0) return -1;
+    if (gpio_init_pin(GPIO_PIN_IRCUT_A,      "out", 0) != 0) return -1;
+    if (gpio_init_pin(GPIO_PIN_ORANGE_LED,   "out", 0) != 0) return -1;
+    if (gpio_init_pin(GPIO_PIN_BLUE_LED,     "out", 1) != 0) return -1;
+    if (gpio_init_pin(GPIO_PIN_BUTTON_SETUP, "in",  1) != 0) return -1;
+    if (gpio_init_pin(GPIO_PIN_PHOTO_SENSOR, "in",  0) != 0) return -1;
+    return 0;
+}
+
+/* ============================================================================
+   PWM / SOFTLIGHT INFRASTRUCTURE
+   ============================================================================ */
+
+#define PWM_DEV_PATH "/dev/pwm"
+#define PWM_CMD_WRITE _IOW('p', 0x01, struct pwm_data_s)
+
+struct pwm_data_s {
+    unsigned int pwm_num;
+    unsigned int duty;
+    unsigned int period;
+    unsigned int enable;
+};
+
+static int g_pwmFd = -1;
+
+static int HI_PWM_Init(void) {
+    g_pwmFd = open(PWM_DEV_PATH, O_RDWR);
+    /* Not fatal if unavailable */
+    return 0;
+}
+
+static int softlight_init(void) {
+    if (g_pwmFd >= 0) {
+        struct pwm_data_s d = { .pwm_num = 0, .duty = 0, .period = 256, .enable = 1 };
+        ioctl(g_pwmFd, PWM_CMD_WRITE, &d);
+    }
+    return 0;
+}
+
+/* ============================================================================
+   PLATFORM THREAD
+   ============================================================================ */
+
+static pthread_mutex_t g_platformMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_t g_platformThread = 0;
+
+static void platform_callback_mutex_init(void) {
+    pthread_mutex_init(&g_platformMutex, NULL);
+}
+
+static void *platform_thread(void *arg) {
+    (void)arg;
+    printf("[SDK-THREAD]dbg: Platform Thread Start...\n");
+
+    char path[64];
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", GPIO_PIN_BUTTON_SETUP);
+
+    int last_state = 1;
+    while (1) {
+        usleep(50000);
+        int v = gpio_read_value(GPIO_PIN_BUTTON_SETUP);
+        if (v == 0 && last_state == 1) {
+            pthread_mutex_lock(&g_platformMutex);
+            if (g_keydownCb) g_keydownCb();
+            pthread_mutex_unlock(&g_platformMutex);
+        }
+        last_state = v;
+    }
+    return NULL;
+}
+
+/* ============================================================================
    INITIALIZATION AND CORE FUNCTIONS
    ============================================================================ */
 
@@ -255,43 +455,41 @@ int localsdk_set_shellcall_func(int *param_1) {
  * @brief Initialize the SDK with HISILICON subsystems
  */
 int localsdk_init() {
-    puts("--------------------------------…");
-    puts("    WELCOME TO LOCALSDK      ('_…");
-    puts("--------------------------------…");
+    puts("----------------------------------------");
+    puts("    WELCOME TO LOCALSDK      ('_)')");
+    puts("----------------------------------------");
     puts("    platform: hi3518ev300 ");
     printf("    version : %s \n", "HI_SDK20190315");
     printf("    update  : %s (%s) \n", "Apr 12 2021", "18:16:49");
-    puts("--------------------------------…");
-    
+    puts("----------------------------------------");
+
     platform_callback_mutex_init();
-    
+
     if (HI_PWM_Init() != 0) {
         printf("[%s]err: HI_PWM init Fail!\n", "localsdk_init");
-        return 1;
+        return LOCALSDK_ERROR;
     }
-    
-    if (softlight_init() != 0)
+
+    if (softlight_init() != 0) {
         printf("[%s]err: softlight init Fail!\n", "localsdk_init");
-    else {
-        int32_t attr = gpio_all_init();
-        
-        if (attr != 0) {
-            printf("[%s]err: gpio init Fail!\n", "localsdk_init");
-            return 1;
-        }
-        
-        void newthread;
-        int32_t result = pthread_create(&newthread, attr, platform_thread);
-        
-        if (result == 0) {
-            printf("[%s]dbg: Platform Thread Create …", "SDK-THREAD");
-            return result;
-        }
-        
-        printf("[%s]err: Platform Thread Create …", "localsdk_init");
+        return LOCALSDK_ERROR;
     }
-    
-    return 1;
+
+    if (gpio_all_init() != 0) {
+        printf("[%s]err: gpio init Fail!\n", "localsdk_init");
+        return LOCALSDK_ERROR;
+    }
+
+    pthread_t newthread;
+    int32_t result = pthread_create(&newthread, NULL, platform_thread, NULL);
+    if (result == 0) {
+        g_platformThread = newthread;
+        printf("[%s]dbg: Platform Thread Create OK!  ('_)')\n", "SDK-THREAD");
+        return LOCALSDK_OK;
+    }
+
+    printf("[%s]err: Platform Thread Create Fail!\n", "localsdk_init");
+    return LOCALSDK_ERROR;
 }
 
 /**
@@ -299,6 +497,18 @@ int localsdk_init() {
  */
 int localsdk_destory() {
     sdk_log("[sdk] Destroying SDK\n");
+
+    for (int chn = 0; chn < 2; chn++) {
+        sdk_video_shutdown_channel(chn);
+    }
+
+    sdk_video_unbind_vi_vpss();
+    HI_MPI_VPSS_StopGrp(g_vpssGrp);
+    HI_MPI_VPSS_DestroyGrp(g_vpssGrp);
+    HI_MPI_VI_DisableChn(g_viChn);
+    HI_MPI_VI_DisableDev(g_viDev);
+    HI_MPI_SYS_Exit();
+    HI_MPI_VB_Exit();
 
     if (g_ispThread != 0) {
         HI_MPI_ISP_Exit(0);
@@ -335,10 +545,15 @@ int localsdk_get_version() {
 static VPSS_GRP g_vpssGrp = 0;
 static VPSS_CHN g_vpssChn[4] = {0, 1, 2, 3};
 static VENC_CHN g_vencChn[2] = {0, 1};
+static VI_DEV g_viDev = 0;
+static VI_CHN g_viChn = 0;
 static int32_t g_videoStarted[2] = {0, 0};
 static int32_t (*g_encCb[2])(LOCALSDK_H26X_FRAME_INFO *frameInfo) = {NULL, NULL};
 static int32_t (*g_yuvCb[2])(LOCALSDK_H26X_FRAME_INFO *frameInfo) = {NULL, NULL};
 static int (*g_algoRegisterCb)(void) = NULL;
+static int (*g_algoUnregisterCb)(void) = NULL;
+static pthread_t g_videoRunThread[2] = {0, 0};
+static volatile int g_videoRunning[2] = {0, 0};
 
 static int sdk_video_any_started(void) {
     return g_videoStarted[0] || g_videoStarted[1];
@@ -418,6 +633,34 @@ static int sdk_video_unbind_vpss_venc(int chn, VENC_CHN vencChn) {
     stDestChn.s32ChnId = vencChn;
 
     return (HI_MPI_SYS_UnBind(&stSrcChn, &stDestChn) == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
+}
+
+static int sdk_video_unbind_vi_vpss(void) {
+    MPP_CHN_S stSrcChn;
+    MPP_CHN_S stDestChn;
+
+    memset(&stSrcChn, 0, sizeof(stSrcChn));
+    memset(&stDestChn, 0, sizeof(stDestChn));
+
+    stSrcChn.enModId = HI_ID_VIU;
+    stSrcChn.s32DevId = 0;
+    stSrcChn.s32ChnId = g_viChn;
+
+    stDestChn.enModId = HI_ID_VPSS;
+    stDestChn.s32DevId = g_vpssGrp;
+    stDestChn.s32ChnId = 0;
+
+    return (HI_MPI_SYS_UnBind(&stSrcChn, &stDestChn) == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
+}
+
+static void sdk_video_shutdown_channel(int chn) {
+    if (chn < 0 || chn > 1) {
+        return;
+    }
+    sdk_video_unbind_vpss_venc(chn, g_vencChn[chn]);
+    HI_MPI_VENC_StopRecvPic(g_vencChn[chn]);
+    HI_MPI_VENC_DestroyChn(g_vencChn[chn]);
+    g_videoStarted[chn] = 0;
 }
 
 static int sdk_video_create_venc_channel(VENC_CHN vencChn, LOCALSDK_VIDEO_OPTIONS *options, int jpeg) {
@@ -535,6 +778,147 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn, LOCALSDK_VIDEO_OPTION
     }
 
     return LOCALSDK_OK;
+}
+
+static int sdk_video_mipi_init_f22(void) {
+    combo_dev_attr_t stComboAttr;
+    int fd;
+
+    memset(&stComboAttr, 0, sizeof(stComboAttr));
+    stComboAttr.devno       = 0;
+    stComboAttr.input_mode  = INPUT_MODE_MIPI;
+    stComboAttr.data_rate   = MIPI_DATA_RATE_X1;
+    stComboAttr.img_rect.x      = 0;
+    stComboAttr.img_rect.y      = 0;
+    stComboAttr.img_rect.width  = 1920;
+    stComboAttr.img_rect.height = 1080;
+    stComboAttr.mipi_attr.input_data_type = DATA_TYPE_RAW_10BIT;
+    stComboAttr.mipi_attr.wdr_mode        = HI_MIPI_WDR_MODE_NONE;
+    stComboAttr.mipi_attr.lane_id[0]      = 0;
+    stComboAttr.mipi_attr.lane_id[1]      = 2;
+    stComboAttr.mipi_attr.lane_id[2]      = -1;
+    stComboAttr.mipi_attr.lane_id[3]      = -1;
+
+    fd = open("/dev/hi_mipi", O_RDWR);
+    if (fd < 0) {
+        sdk_log("[sdk][video] warning: open /dev/hi_mipi failed\n");
+        return LOCALSDK_OK; /* non-fatal in some environments */
+    }
+
+    if (ioctl(fd, HI_MIPI_SET_DEV_ATTR, &stComboAttr) != 0) {
+        sdk_log("[sdk][video] HI_MIPI_SET_DEV_ATTR failed\n");
+        close(fd);
+        return LOCALSDK_ERROR;
+    }
+    close(fd);
+    return LOCALSDK_OK;
+}
+
+static int sdk_video_vi_start_f22(void) {
+    VI_DEV_ATTR_S stViDevAttr;
+    VI_CHN_ATTR_S stChnAttr;
+    HI_S32 result;
+
+    /* Configure MIPI first */
+    if (sdk_video_mipi_init_f22() != LOCALSDK_OK) {
+        sdk_log("[sdk][video] MIPI init failed\n");
+        return LOCALSDK_ERROR;
+    }
+
+    memset(&stViDevAttr, 0, sizeof(stViDevAttr));
+    stViDevAttr.enIntfMode = VI_MODE_MIPI;         /* 6, from trace */
+    stViDevAttr.enWorkMode = VI_WORK_MODE_1Multiplex;
+    stViDevAttr.au32CompMask[0] = 0xFFC00000;      /* from trace: -4194304 */
+    stViDevAttr.au32CompMask[1] = 0x0;
+    stViDevAttr.enScanMode = VI_SCAN_PROGRESSIVE;
+    stViDevAttr.s32AdChnId[0] = -1;
+    stViDevAttr.s32AdChnId[1] = -1;
+    stViDevAttr.s32AdChnId[2] = -1;
+    stViDevAttr.s32AdChnId[3] = -1;
+    stViDevAttr.enDataSeq = VI_INPUT_DATA_YUYV;
+    stViDevAttr.stSynCfg.enVsync = VI_VSYNC_PULSE;
+    stViDevAttr.stSynCfg.enVsyncNeg = VI_VSYNC_NEG_HIGH;
+    stViDevAttr.stSynCfg.enHsync = VI_HSYNC_VALID_SINGNAL;
+    stViDevAttr.stSynCfg.enHsyncNeg = VI_HSYNC_NEG_HIGH;
+    stViDevAttr.stSynCfg.enVsyncValid = VI_VSYNC_VALID_SINGAL;
+    stViDevAttr.stSynCfg.enVsyncValidNeg = VI_VSYNC_VALID_NEG_HIGH;
+    stViDevAttr.stSynCfg.stTimingBlank.u32HsyncHfb = 0;
+    stViDevAttr.stSynCfg.stTimingBlank.u32HsyncAct = 1920;
+    stViDevAttr.stSynCfg.stTimingBlank.u32HsyncHbb = 0;
+    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVfb = 0;
+    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVact = 1080;
+    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVbb = 0;
+    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVbfb = 0;
+    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVbact = 0;
+    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVbbb = 0;
+    stViDevAttr.enDataPath = VI_PATH_ISP;
+    stViDevAttr.enInputDataType = VI_DATA_TYPE_RGB;
+    stViDevAttr.bDataRev = HI_FALSE;
+    stViDevAttr.stDevRect.s32X = 0;
+    stViDevAttr.stDevRect.s32Y = 0;
+    stViDevAttr.stDevRect.u32Width = 1920;
+    stViDevAttr.stDevRect.u32Height = 1080;
+
+    result = HI_MPI_VI_SetDevAttr(g_viDev, &stViDevAttr);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] HI_MPI_VI_SetDevAttr failed: 0x%x\n", result);
+        return LOCALSDK_ERROR;
+    }
+
+    result = HI_MPI_VI_EnableDev(g_viDev);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] HI_MPI_VI_EnableDev failed: 0x%x\n", result);
+        return LOCALSDK_ERROR;
+    }
+
+    memset(&stChnAttr, 0, sizeof(stChnAttr));
+    stChnAttr.stCapRect.s32X = 0;
+    stChnAttr.stCapRect.s32Y = 0;
+    stChnAttr.stCapRect.u32Width = 1920;
+    stChnAttr.stCapRect.u32Height = 1080;
+    stChnAttr.stDestSize.u32Width = 1920;
+    stChnAttr.stDestSize.u32Height = 1080;
+    stChnAttr.enCapSel = VI_CAPSEL_BOTH;
+    stChnAttr.enPixFormat = PIXEL_FORMAT_YUV_SEMIPLANAR_420;
+    stChnAttr.bMirror = HI_FALSE;
+    stChnAttr.bFlip = HI_FALSE;
+    stChnAttr.s32SrcFrameRate = -1;
+    stChnAttr.s32DstFrameRate = -1;
+    stChnAttr.enCompressMode = COMPRESS_MODE_NONE;
+
+    result = HI_MPI_VI_SetChnAttr(g_viChn, &stChnAttr);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] HI_MPI_VI_SetChnAttr failed: 0x%x\n", result);
+        HI_MPI_VI_DisableDev(g_viDev);
+        return LOCALSDK_ERROR;
+    }
+
+    result = HI_MPI_VI_EnableChn(g_viChn);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] HI_MPI_VI_EnableChn failed: 0x%x\n", result);
+        HI_MPI_VI_DisableDev(g_viDev);
+        return LOCALSDK_ERROR;
+    }
+
+    return LOCALSDK_OK;
+}
+
+static int sdk_video_bind_vi_vpss(void) {
+    MPP_CHN_S stSrcChn;
+    MPP_CHN_S stDestChn;
+
+    memset(&stSrcChn, 0, sizeof(stSrcChn));
+    memset(&stDestChn, 0, sizeof(stDestChn));
+
+    stSrcChn.enModId = HI_ID_VIU;
+    stSrcChn.s32DevId = 0;
+    stSrcChn.s32ChnId = g_viChn;
+
+    stDestChn.enModId = HI_ID_VPSS;
+    stDestChn.s32DevId = g_vpssGrp;
+    stDestChn.s32ChnId = 0;
+
+    return (HI_MPI_SYS_Bind(&stSrcChn, &stDestChn) == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
 /* Camera/Sensor defaults (hi3518ev300 + f22 per firmware) */
@@ -676,10 +1060,15 @@ static int sdk_video_vi_isp_init_f22(int fps) {
         return LOCALSDK_ERROR;
     }
 
+    result = sdk_video_vi_start_f22();
+    if (result != LOCALSDK_OK) {
+        sdk_log("[sdk][video] VI start failed\n");
+        return LOCALSDK_ERROR;
+    }
+
     /* TODO:
        - Import MIPI combo attributes for JXF22 (e.g. MIPI_*_JXF22_*).
-       - Implement VI start (dev/pipe/chn) and sensor registration.
-       - Bind VI -> VPSS after VI/ISP is up. */
+       - Replace minimal VI timing with exact sensor-specific values if needed. */
     return LOCALSDK_OK;
 }
 
@@ -760,6 +1149,14 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
+    result = sdk_video_bind_vi_vpss();
+    if (result != LOCALSDK_OK) {
+        sdk_log("[sdk][video] Failed to bind VI->VPSS\n");
+        HI_MPI_VPSS_StopGrp(g_vpssGrp);
+        HI_MPI_VPSS_DestroyGrp(g_vpssGrp);
+        return LOCALSDK_ERROR;
+    }
+
     sdk_log("[sdk][video] Video init complete\n");
     return LOCALSDK_OK;
 }
@@ -816,6 +1213,7 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
 int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     VPSS_CHN_ATTR_S stChnAttr;
     int32_t result;
+    int wasStarted;
     
     if (chn < 0 || chn > 3 || !options) {
         sdk_log("[sdk][video] Invalid channel or options\n");
@@ -839,6 +1237,8 @@ int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         stChnAttr.u32Width = 640;
         stChnAttr.u32Height = 360;
     }
+    stChnAttr.bMirror = options->mirror ? HI_TRUE : HI_FALSE;
+    stChnAttr.bFlip = options->flip ? HI_TRUE : HI_FALSE;
     
     /* Update attributes */
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
@@ -849,6 +1249,16 @@ int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     
     /* Update video parameters */
     memcpy(&g_videoParams[chn * 32], options, sizeof(LOCALSDK_VIDEO_OPTIONS));
+
+    wasStarted = g_videoStarted[chn];
+    if (wasStarted) {
+        sdk_video_shutdown_channel(chn);
+        result = local_sdk_video_start(chn);
+        if (result != LOCALSDK_OK) {
+            sdk_log("[sdk][video] Failed to restart channel %d after parameter update\n", chn);
+            return LOCALSDK_ERROR;
+        }
+    }
     
     return LOCALSDK_OK;
 }
@@ -908,54 +1318,108 @@ int local_sdk_video_stop(int chn, bool state) {
         sdk_log("[sdk][video] Invalid channel: %d\n", chn);
         return LOCALSDK_ERROR;
     }
-    
+
     sdk_log("[sdk][video] Stopping video on channel %d\n", chn);
-    g_videoStarted[chn] = 0;
-    sdk_video_unbind_vpss_venc(chn, g_vencChn[chn]);
-    HI_MPI_VENC_StopRecvPic(g_vencChn[chn]);
-    HI_MPI_VENC_DestroyChn(g_vencChn[chn]);
+
+    /* Stop the run thread first */
+    if (chn <= 1 && g_videoRunning[chn]) {
+        g_videoRunning[chn] = 0;
+        if (g_videoRunThread[chn] != 0) {
+            pthread_join(g_videoRunThread[chn], NULL);
+            g_videoRunThread[chn] = 0;
+        }
+    }
+
+    sdk_video_shutdown_channel(chn);
     return LOCALSDK_OK;
 }
 
+typedef struct {
+    int chn;
+} VideoRunArg;
+
+static VideoRunArg g_videoRunArgs[2] = {{0}, {1}};
+
+static void *sdk_video_run_thread(void *arg) {
+    VideoRunArg *a = (VideoRunArg *)arg;
+    int chn = a->chn;
+    VENC_CHN vencChn = g_vencChn[chn];
+    int vencFd;
+    fd_set read_fds;
+    struct timeval tv;
+
+    vencFd = HI_MPI_VENC_GetFd(vencChn);
+    if (vencFd < 0) {
+        sdk_log("[sdk][video] GetFd failed for chn %d\n", chn);
+        g_videoRunning[chn] = 0;
+        return NULL;
+    }
+
+    while (g_videoRunning[chn]) {
+        FD_ZERO(&read_fds);
+        FD_SET(vencFd, &read_fds);
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+
+        int sel = select(vencFd + 1, &read_fds, NULL, NULL, &tv);
+        if (sel < 0) break;
+        if (sel == 0) continue;
+
+        if (!FD_ISSET(vencFd, &read_fds)) continue;
+
+        VENC_CHN_STAT_S stStat;
+        if (HI_MPI_VENC_Query(vencChn, &stStat) != HI_SUCCESS) continue;
+        if (stStat.u32CurPacks == 0) continue;
+
+        VENC_STREAM_S stStream;
+        memset(&stStream, 0, sizeof(stStream));
+        stStream.pstPack = (VENC_PACK_S *)malloc(sizeof(VENC_PACK_S) * stStat.u32CurPacks);
+        if (!stStream.pstPack) continue;
+        stStream.u32PackCount = stStat.u32CurPacks;
+
+        if (HI_MPI_VENC_GetStream(vencChn, &stStream, HI_FALSE) != HI_SUCCESS) {
+            free(stStream.pstPack);
+            continue;
+        }
+
+        if (g_encCb[chn]) {
+            for (uint32_t i = 0; i < stStream.u32PackCount; i++) {
+                LOCALSDK_H26X_FRAME_INFO fi;
+                memset(&fi, 0, sizeof(fi));
+                fi.data      = (signed char *)stStream.pstPack[i].pu8Addr;
+                fi.size      = stStream.pstPack[i].u32Len;
+                fi.timestamp = stStream.pstPack[i].u64PTS;
+                fi.type      = stStream.pstPack[i].DataType.enH264EType;
+                g_encCb[chn](&fi);
+            }
+        }
+
+        HI_MPI_VENC_ReleaseStream(vencChn, &stStream);
+        free(stStream.pstPack);
+    }
+
+    g_videoRunning[chn] = 0;
+    return NULL;
+}
+
 /**
- * @brief Run video processing - main loop
+ * @brief Run video processing - starts background capture thread
  */
 int local_sdk_video_run(int chn) {
-    VENC_STREAM_S stStream;
-    VENC_PACK_S stPack;
-    int32_t result;
-    
-    if (chn < 0 || chn > 3 || !g_videoStarted[chn]) {
+    if (chn < 0 || chn > 1 || !g_videoStarted[chn]) {
         return LOCALSDK_ERROR;
     }
-    
-    /* Get encoded stream */
-    memset(&stStream, 0, sizeof(VENC_STREAM_S));
-    stStream.pstPack = &stPack;
-    stStream.u32PackCount = 1;
-    
-    result = HI_MPI_VENC_GetStream(g_vencChn[chn], &stStream, 1000);
-    if (result != HI_SUCCESS) {
-        return result;  /* No stream available yet */
+    if (g_videoRunning[chn]) {
+        return LOCALSDK_OK; /* already running */
     }
-    
-    /* Process encoded data via callback (best-effort) */
-    if (g_encCb[chn]) {
-        LOCALSDK_H26X_FRAME_INFO frameInfo;
-        memset(&frameInfo, 0, sizeof(frameInfo));
-        frameInfo.data = (signed char *)stStream.pstPack[0].pu8Addr;
-        frameInfo.size = stStream.pstPack[0].u32Len;
-        frameInfo.timestamp = stStream.pstPack[0].u64PTS;
-        frameInfo.type = stStream.pstPack[0].DataType.enH264EType;
-        g_encCb[chn](&frameInfo);
+
+    g_videoRunning[chn] = 1;
+    if (pthread_create(&g_videoRunThread[chn], NULL, sdk_video_run_thread, &g_videoRunArgs[chn]) != 0) {
+        g_videoRunning[chn] = 0;
+        sdk_log("[sdk][video] Failed to create run thread for chn %d\n", chn);
+        return LOCALSDK_ERROR;
     }
-    
-    /* Release stream */
-    result = HI_MPI_VENC_ReleaseStream(g_vencChn[chn], &stStream);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] Failed to release stream: 0x%x\n", result);
-    }
-    
+
     return LOCALSDK_OK;
 }
 
@@ -1154,7 +1618,7 @@ int local_sdk_video_set_algo_module_register_callback(int (*callback)()) {
  */
 int local_sdk_video_set_algo_module_unregister_callback(int (*callback)()) {
     sdk_log("[sdk][video] Setting algo module unregister callback\n");
-    /* TODO: Store and invoke algorithm module unregistration */
+    g_algoUnregisterCb = callback;
     return LOCALSDK_OK;
 }
 
@@ -1193,7 +1657,9 @@ int local_sdk_video_set_brightness(int param_1, int param_2, int param_3, int pa
 int local_sdk_video_set_flip(int param_1, int param_2) {
     VPSS_CHN_ATTR_S stChnAttr;
     int32_t result;
-    int32_t chn = 0;  /* Use first channel */
+    int32_t chn;
+
+    chn = (param_1 != 0) ? LOCALSDK_VIDEO_SECONDARY_CHANNEL : LOCALSDK_VIDEO_PRIMARY_CHANNEL;
     
     sdk_log("[sdk][video] Setting flip: %d, mirror: %d\n", param_1, param_2);
     
@@ -1211,6 +1677,12 @@ int local_sdk_video_set_flip(int param_1, int param_2) {
         sdk_log("[sdk][video] Failed to set channel attributes: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
+
+    LOCALSDK_VIDEO_OPTIONS *options = sdk_video_get_options(chn);
+    if (options) {
+        options->flip = (param_1 != 0) ? 1U : 0U;
+        options->mirror = (param_2 != 0) ? 1U : 0U;
+    }
     
     return LOCALSDK_OK;
 }
@@ -1219,23 +1691,31 @@ int local_sdk_video_set_flip(int param_1, int param_2) {
  * @brief Set video framerate
  */
 int local_sdk_video_set_fps(int param_1, int param_2, int param_3, int param_4) {
-    VENC_PARAM_MOD_S stModParam;
-    int32_t result;
+    int32_t chn = param_1;
+    LOCALSDK_VIDEO_OPTIONS *options;
     
-    sdk_log("[sdk][video] Setting FPS: %d\n", param_1);
+    (void)param_3;
+    (void)param_4;
+    sdk_log("[sdk][video] Setting FPS channel %d: %d\n", chn, param_2);
     
-    result = HI_MPI_VENC_GetModParam(&stModParam);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] Failed to get encoder module params: 0x%x\n", result);
+    if (chn < 0 || chn > 1 || param_2 < 1 || param_2 > 30) {
+        sdk_log("[sdk][video] Invalid FPS request\n");
         return LOCALSDK_ERROR;
     }
-    
-    stModParam.u32FrameRate = param_1;
-    
-    result = HI_MPI_VENC_SetModParam(&stModParam);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] Failed to set encoder module params: 0x%x\n", result);
+
+    options = sdk_video_get_options(chn);
+    if (!options) {
         return LOCALSDK_ERROR;
+    }
+
+    options->fps = (uint32_t)param_2;
+    if (options->gop == 0) {
+        options->gop = (uint32_t)param_2;
+    }
+
+    if (g_videoStarted[chn]) {
+        sdk_video_shutdown_channel(chn);
+        return local_sdk_video_start(chn);
     }
     
     return LOCALSDK_OK;
@@ -1247,12 +1727,21 @@ int local_sdk_video_set_fps(int param_1, int param_2, int param_3, int param_4) 
 int local_sdk_video_set_kbps(int param_1, int param_2) {
     VENC_RC_PARAM_S stRcParam;
     int32_t result;
+    LOCALSDK_VIDEO_OPTIONS *options;
     
     sdk_log("[sdk][video] Setting bitrate: %d kbps\n", param_2);
     
     if (param_1 < 0 || param_1 > 1) {
         sdk_log("[sdk][video] Invalid channel for bitrate: %d\n", param_1);
         return LOCALSDK_ERROR;
+    }
+
+    options = sdk_video_get_options(param_1);
+    if (options) {
+        options->bitrate = (uint32_t)param_2;
+        if (!g_videoStarted[param_1]) {
+            return LOCALSDK_OK;
+        }
     }
 
     result = HI_MPI_VENC_GetRcParam(g_vencChn[param_1], &stRcParam);
@@ -1262,7 +1751,7 @@ int local_sdk_video_set_kbps(int param_1, int param_2) {
     }
     
     stRcParam.u32StatTime = 1;
-    stRcParam.u32SrcFrmRate = param_1;
+    stRcParam.u32SrcFrmRate = options ? options->fps : LOCALSDK_VIDEO_FRAMERATE;
     stRcParam.u32TargetBitrate = param_2 * 1000;  /* Convert kbps to bps */
     
     result = HI_MPI_VENC_SetRcParam(g_vencChn[param_1], &stRcParam);
@@ -1286,54 +1775,77 @@ static AO_CHN g_aoChn = 0;         /* Audio Output Channel */
 static AENC_CHN g_aencChn = 0;     /* Audio Encoder Channel */
 static ADEC_CHN g_adecChn = 0;     /* Audio Decoder Channel */
 static int32_t g_audioStarted = 0;
+#define MAX_AENC_CALLBACKS 4
+static int (*g_aencCb[MAX_AENC_CALLBACKS])(LOCALSDK_AUDIO_G711_FRAME_INFO *frameInfo) = {NULL};
+static int g_aencCbCount = 0;
+static pthread_t g_audioAiThread = 0;
+static pthread_t g_audioAencThread = 0;
+static volatile int g_audioRunning = 0;
+
+/* Configure inner acodec via /dev/acodec (from trace: volume=60) */
+static void sdk_audio_inner_codec_cfg(void) {
+    int fd = open("/dev/acodec", O_RDWR);
+    if (fd < 0) return;
+
+    ioctl(fd, ACODEC_SOFT_RESET_CTRL, NULL);
+
+    ACODEC_FS_E fs = ACODEC_FS_8000;
+    ioctl(fd, ACODEC_SET_I2S1_FS, &fs);
+
+    ACODEC_MIXER_E input_mode = ACODEC_MIXER_IN;
+    ioctl(fd, ACODEC_SET_MIXER_MIC, &input_mode);
+
+    int vol = 60;
+    printf("[SDK-AUDIO]SAMPLE_INNER_CODEC_CfgAudio: set acodec volume:[%d]\n", vol);
+    ioctl(fd, ACODEC_SET_INPUT_VOL, &vol);
+
+    close(fd);
+}
 
 /**
- * @brief Initialize audio subsystem with HISILICON AI/AO
+ * @brief Initialize audio subsystem with HISILICON AI/AO (G.711A: 8kHz, 16-bit, mono)
  */
 int local_sdk_audio_init() {
     AIO_ATTR_S stAioAttr;
     int32_t result;
-    
+
     sdk_log("[sdk][audio] Initializing audio subsystem\n");
-    
-    /* Configure audio input attributes */
+
     memset(&stAioAttr, 0, sizeof(AIO_ATTR_S));
-    stAioAttr.enSamplerate = AUDIO_SAMPLE_RATE_16000;  /* 16 kHz */
-    stAioAttr.enBitwidth = AUDIO_BIT_WIDTH_16;         /* 16-bit */
-    stAioAttr.enWorkmode = AIO_MODE_I2S_MASTER;        /* I2S master */
-    stAioAttr.u32EXFlag = 0;
-    stAioAttr.u32FrmNum = 30;
-    stAioAttr.u32PtNumPerFrm = 320;  /* 20ms at 16kHz */
-    stAioAttr.u32ChnCnt = 1;         /* Mono */
-    
-    /* Set AI public attributes */
+    stAioAttr.enSamplerate   = AUDIO_SAMPLE_RATE_8000; /* G.711 standard */
+    stAioAttr.enBitwidth     = AUDIO_BIT_WIDTH_16;
+    stAioAttr.enWorkmode     = AIO_MODE_I2S_MASTER;
+    stAioAttr.u32EXFlag      = 0;
+    stAioAttr.u32FrmNum      = 30;
+    stAioAttr.u32PtNumPerFrm = 320; /* 40ms at 8kHz */
+    stAioAttr.u32ChnCnt      = 1;
+
     result = HI_MPI_AI_SetPubAttr(g_aiDev, &stAioAttr);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][audio] Failed to set AI attributes: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
-    /* Enable audio input device */
+
     result = HI_MPI_AI_Enable(g_aiDev);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][audio] Failed to enable AI: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
-    /* Set AO public attributes */
+
     result = HI_MPI_AO_SetPubAttr(g_aoDev, &stAioAttr);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][audio] Failed to set AO attributes: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
-    /* Enable audio output device */
+
     result = HI_MPI_AO_Enable(g_aoDev);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][audio] Failed to enable AO: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
+    sdk_audio_inner_codec_cfg();
+
     sdk_log("[sdk][audio] Audio subsystem initialized\n");
     return LOCALSDK_OK;
 }
@@ -1435,12 +1947,86 @@ int local_sdk_audio_set_volume(int chn, int value) {
 }
 
 /**
- * @brief Set audio encode callback
+ * @brief Set audio encode callback (called twice per trace: for primary and secondary)
  */
 int local_sdk_audio_set_encode_frame_callback(int chn, int (*callback)(LOCALSDK_AUDIO_G711_FRAME_INFO *frameInfo)) {
-    sdk_log("[sdk][audio] Setting encode callback for channel %d\n", chn);
-    /* TODO: Store callback pointer and invoke from audio processing thread */
+    printf("[SDK-THREAD]dbg: Set Audio Enc Callback Doing...\n");
+    if (callback && g_aencCbCount < MAX_AENC_CALLBACKS) {
+        g_aencCb[g_aencCbCount++] = callback;
+    }
     return LOCALSDK_OK;
+}
+
+/* AI capture thread: AI -> AENC */
+static void *sdk_audio_ai_thread(void *arg) {
+    (void)arg;
+    AUDIO_FRAME_S stFrame;
+    AEC_FRAME_S stAecFrm;
+    fd_set read_fds;
+    struct timeval tv;
+
+    AI_CHN_PARAM_S stParam;
+    if (HI_MPI_AI_GetChnParam(g_aiDev, g_aiChn, &stParam) == HI_SUCCESS) {
+        stParam.u32UsrFrmDepth = 30;
+        HI_MPI_AI_SetChnParam(g_aiDev, g_aiChn, &stParam);
+    }
+
+    int aiFd = HI_MPI_AI_GetFd(g_aiDev, g_aiChn);
+
+    while (g_audioRunning) {
+        FD_ZERO(&read_fds);
+        FD_SET(aiFd, &read_fds);
+        tv.tv_sec = 1; tv.tv_usec = 0;
+
+        int sel = select(aiFd + 1, &read_fds, NULL, NULL, &tv);
+        if (sel <= 0) continue;
+        if (!FD_ISSET(aiFd, &read_fds)) continue;
+
+        memset(&stAecFrm, 0, sizeof(stAecFrm));
+        if (HI_MPI_AI_GetFrame(g_aiDev, g_aiChn, &stFrame, &stAecFrm, HI_FALSE) != HI_SUCCESS)
+            continue;
+
+        HI_MPI_AENC_SendFrame(g_aencChn, &stFrame, &stAecFrm);
+        HI_MPI_AI_ReleaseFrame(g_aiDev, g_aiChn, &stFrame, &stAecFrm);
+    }
+    return NULL;
+}
+
+/* AENC stream thread: AENC -> callbacks */
+static void *sdk_audio_aenc_thread(void *arg) {
+    (void)arg;
+    AUDIO_STREAM_S stStream;
+    fd_set read_fds;
+    struct timeval tv;
+
+    int aencFd = HI_MPI_AENC_GetFd(g_aencChn);
+
+    while (g_audioRunning) {
+        FD_ZERO(&read_fds);
+        FD_SET(aencFd, &read_fds);
+        tv.tv_sec = 1; tv.tv_usec = 0;
+
+        int sel = select(aencFd + 1, &read_fds, NULL, NULL, &tv);
+        if (sel <= 0) continue;
+        if (!FD_ISSET(aencFd, &read_fds)) continue;
+
+        if (HI_MPI_AENC_GetStream(g_aencChn, &stStream, HI_FALSE) != HI_SUCCESS)
+            continue;
+
+        if (g_aencCbCount > 0) {
+            LOCALSDK_AUDIO_G711_FRAME_INFO fi;
+            memset(&fi, 0, sizeof(fi));
+            fi.data = (signed char *)stStream.pStream;
+            fi.size = stStream.u32Len;
+            fi.timestamp = stStream.u64TimeStamp;
+            for (int i = 0; i < g_aencCbCount; i++) {
+                if (g_aencCb[i]) g_aencCb[i](&fi);
+            }
+        }
+
+        HI_MPI_AENC_ReleaseStream(g_aencChn, &stStream);
+    }
+    return NULL;
 }
 
 /**
@@ -1448,23 +2034,21 @@ int local_sdk_audio_set_encode_frame_callback(int chn, int (*callback)(LOCALSDK_
  */
 int local_sdk_audio_start() {
     int32_t result;
-    
+
     sdk_log("[sdk][audio] Starting audio\n");
-    
-    /* Enable AI channel for capture */
+
     result = HI_MPI_AI_EnableChn(g_aiDev, g_aiChn);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][audio] Failed to enable AI channel: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
-    /* Enable AO channel for playback */
+
     result = HI_MPI_AO_EnableChn(g_aoDev, g_aoChn);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][audio] Failed to enable AO channel: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
     g_audioStarted = 1;
     return LOCALSDK_OK;
 }
@@ -1474,36 +2058,51 @@ int local_sdk_audio_start() {
  */
 int local_sdk_audio_stop() {
     sdk_log("[sdk][audio] Stopping audio\n");
+    g_audioRunning = 0;
+    if (g_audioAiThread)   { pthread_join(g_audioAiThread, NULL);   g_audioAiThread = 0; }
+    if (g_audioAencThread) { pthread_join(g_audioAencThread, NULL); g_audioAencThread = 0; }
     g_audioStarted = 0;
     return LOCALSDK_OK;
 }
 
 /**
- * @brief Run audio processing - capture and encode frames
+ * @brief Run audio - create AENC channel and start AI + AENC threads
  */
 int local_sdk_audio_run() {
-    AUDIO_FRAME_S stFrame;
-    AEC_FRAME_S stAecFrame;
+    AENC_CHN_ATTR_S stAencAttr;
     int32_t result;
-    
-    if (!g_audioStarted) {
+
+    if (!g_audioStarted) return LOCALSDK_ERROR;
+    if (g_audioRunning)  return LOCALSDK_OK;
+
+    /* Enable VQE on AI channel */
+    HI_MPI_AI_EnableVqe(g_aiDev, g_aiChn);
+
+    /* Create AENC channel (G.711A) */
+    memset(&stAencAttr, 0, sizeof(stAencAttr));
+    stAencAttr.enType     = PT_G711A;
+    stAencAttr.u32BufSize = 30;
+    stAencAttr.pValue     = NULL;
+
+    result = HI_MPI_AENC_CreateChn(g_aencChn, &stAencAttr);
+    if (result != HI_SUCCESS && result != HI_ERR_AENC_EXIST) {
+        sdk_log("[sdk][audio] HI_MPI_AENC_CreateChn failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
-    /* Get audio frame from AI */
-    result = HI_MPI_AI_GetFrame(g_aiDev, g_aiChn, &stFrame, &stAecFrame, 100);
-    if (result != HI_SUCCESS) {
-        return result;  /* No frame available */
+
+    g_audioRunning = 1;
+
+    if (pthread_create(&g_audioAiThread, NULL, sdk_audio_ai_thread, NULL) != 0) {
+        g_audioRunning = 0;
+        return LOCALSDK_ERROR;
     }
-    
-    /* TODO: Send frame to AENC encoder or callback */
-    
-    /* Release frame */
-    result = HI_MPI_AI_ReleaseFrame(g_aiDev, g_aiChn, &stFrame, &stAecFrame);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to release frame: 0x%x\n", result);
+    if (pthread_create(&g_audioAencThread, NULL, sdk_audio_aenc_thread, NULL) != 0) {
+        g_audioRunning = 0;
+        pthread_join(g_audioAiThread, NULL);
+        g_audioAiThread = 0;
+        return LOCALSDK_ERROR;
     }
-    
+
     return LOCALSDK_OK;
 }
 
@@ -1542,14 +2141,29 @@ int local_sdk_audio_destory() {
 }
 
 /* ============================================================================
-   SPEAKER SUBSYSTEM
+   SPEAKER SUBSYSTEM - HISILICON ADEC + AO
    ============================================================================ */
 
 /**
- * @brief Initialize speaker
+ * @brief Initialize speaker decoder (ADEC)
  */
 int local_sdk_speaker_init() {
-    sdk_log("[sdk][speaker] Initializing speaker\n");
+    ADEC_CHN_ATTR_S stAdecAttr;
+    HI_S32 result;
+
+    sdk_log("[sdk][speaker] Initializing speaker (ADEC)\n");
+    
+    stAdecAttr.enType = PT_G711A;
+    stAdecAttr.u32BufSize = 20;
+    stAdecAttr.enMode = ADEC_MODE_STREAM;
+    stAdecAttr.pValue = NULL;
+
+    result = HI_MPI_ADEC_CreateChn(g_adecChn, &stAdecAttr);
+    if (result != HI_SUCCESS && result != HI_ERR_ADEC_EXIST) {
+        sdk_log("[sdk][speaker] HI_MPI_ADEC_CreateChn failed: 0x%x\n", result);
+        return LOCALSDK_ERROR;
+    }
+
     return LOCALSDK_OK;
 }
 
@@ -1557,12 +2171,9 @@ int local_sdk_speaker_init() {
  * @brief Set speaker parameters
  */
 int local_sdk_speaker_set_parameters(LOCALSDK_SPEAKER_OPTIONS *options) {
-    if (!options) {
-        sdk_log("[sdk][speaker] Invalid options\n");
-        return LOCALSDK_ERROR;
-    }
-    
+    if (!options) return LOCALSDK_ERROR;
     sdk_log("[sdk][speaker] Setting parameters\n");
+    /* TODO: Apply specific codec options if needed */
     return LOCALSDK_OK;
 }
 
@@ -1570,73 +2181,102 @@ int local_sdk_speaker_set_parameters(LOCALSDK_SPEAKER_OPTIONS *options) {
  * @brief Set speaker volume
  */
 int local_sdk_speaker_set_volume(int value) {
-    sdk_log("[sdk][speaker] Setting volume to %d\n", value);
-    return LOCALSDK_OK;
+    sdk_log("[sdk][speaker] Setting volume to %d dB\n", value);
+    return HI_MPI_AO_SetVolume(g_aoDev, value) == HI_SUCCESS ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
 /**
- * @brief Mute speaker
+ * @brief Mute/Unmute speaker
  */
 int local_sdk_speaker_mute() {
-    sdk_log("[sdk][speaker] Muting speaker\n");
-    return LOCALSDK_OK;
+    return HI_MPI_AO_SetMute(g_aoDev, HI_TRUE, NULL) == HI_SUCCESS ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
-/**
- * @brief Unmute speaker
- */
 int local_sdk_speaker_unmute() {
-    sdk_log("[sdk][speaker] Unmuting speaker\n");
-    return LOCALSDK_OK;
+    return HI_MPI_AO_SetMute(g_aoDev, HI_FALSE, NULL) == HI_SUCCESS ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
 /**
- * @brief Start speaker
+ * @brief Start speaker - Bind ADEC to AO
  */
 int local_sdk_speaker_start() {
-    sdk_log("[sdk][speaker] Starting speaker\n");
+    MPP_CHN_S stSrcChn, stDestChn;
+    HI_S32 result;
+
+    sdk_log("[sdk][speaker] Starting speaker (Binding ADEC->AO)\n");
+
+    /* Bind ADEC to AO */
+    stSrcChn.enModId = HI_ID_ADEC;
+    stSrcChn.s32DevId = 0;
+    stSrcChn.s32ChnId = g_adecChn;
+
+    stDestChn.enModId = HI_ID_AO;
+    stDestChn.s32DevId = g_aoDev;
+    stDestChn.s32ChnId = g_aoChn;
+
+    result = HI_MPI_SYS_Bind(&stSrcChn, &stDestChn);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][speaker] HI_MPI_SYS_Bind ADEC->AO failed: 0x%x\n", result);
+        return LOCALSDK_ERROR;
+    }
+
+    result = HI_MPI_AO_EnableChn(g_aoDev, g_aoChn);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][speaker] HI_MPI_AO_EnableChn failed: 0x%x\n", result);
+        return LOCALSDK_ERROR;
+    }
+
+    pthread_mutex_lock(&g_speakerMutex);
+    g_speakerRunState = 3; /* Started */
+    pthread_mutex_unlock(&g_speakerMutex);
+
     return LOCALSDK_OK;
 }
 
 /**
- * @brief Feed PCM data to speaker
+ * @brief Feed PCM data (raw 16-bit 16kHz)
  */
 int local_sdk_speaker_feed_pcm_data(void *data, int size) {
-    if (!data || size <= 0) {
-        sdk_log("[sdk][speaker] Invalid PCM data\n");
-        return LOCALSDK_ERROR;
-    }
-    
-    sdk_log("[sdk][speaker] Feeding PCM data: %d bytes\n", size);
-    return LOCALSDK_OK;
+    AUDIO_FRAME_S stFrame;
+    HI_S32 result;
+
+    if (!data || size <= 0) return LOCALSDK_ERROR;
+
+    memset(&stFrame, 0, sizeof(stFrame));
+    stFrame.enBitwidth = AUDIO_BIT_WIDTH_16;
+    stFrame.enSoundmode = AUDIO_SOUND_MODE_MONO;
+    stFrame.u32Len = size;
+    stFrame.pVirAddr[0] = (HI_U8 *)data;
+    stFrame.u64PhyAddr[0] = 0; /* MPI will handle it if mapped correctly */
+
+    result = HI_MPI_AO_SendFrame(g_aoDev, g_aoChn, &stFrame, 1000);
+    return (result == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
 /**
- * @brief Feed G711 encoded data to speaker
+ * @brief Feed G.711 data (encoded)
  */
 int local_sdk_speaker_feed_g711_data(void *data, int size) {
-    if (!data || size <= 0) {
-        sdk_log("[sdk][speaker] Invalid G711 data\n");
-        return LOCALSDK_ERROR;
-    }
-    
-    sdk_log("[sdk][speaker] Feeding G711 data: %d bytes\n", size);
-    return LOCALSDK_OK;
+    AUDIO_STREAM_S stStream;
+    HI_S32 result;
+
+    if (!data || size <= 0) return LOCALSDK_ERROR;
+
+    memset(&stStream, 0, sizeof(stStream));
+    stStream.pStream = (HI_U8 *)data;
+    stStream.u32Len = size;
+    stStream.u64TimeStamp = 0;
+
+    result = HI_MPI_ADEC_SendStream(g_adecChn, &stStream, HI_TRUE);
+    return (result == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
-/**
- * @brief Finish buffer data
- */
 int local_sdk_speaker_finish_buf_data() {
-    sdk_log("[sdk][speaker] Finishing buffer data\n");
     return LOCALSDK_OK;
 }
 
-/**
- * @brief Clean buffer data
- */
 int local_sdk_speaker_clean_buf_data() {
-    sdk_log("[sdk][speaker] Cleaning buffer data\n");
+    HI_MPI_AO_ClearChnBuf(g_aoDev, g_aoChn);
     return LOCALSDK_OK;
 }
 
@@ -1771,243 +2411,178 @@ int local_sdk_set_alarm_switch(int type, bool state) {
    OSD SUBSYSTEM (On-Screen Display) - HISILICON IMPLEMENTATION
    ============================================================================ */
 
-/* Global OSD state */
-static RGN_HANDLE g_logoRgnHandle = 0;
-static RGN_HANDLE g_timeRgnHandle = 1;
-static RGN_HANDLE g_rectRgnHandle = 2;
-static int32_t g_osdInitialized = 0;
-static MPP_CHN_S g_osdVencChn;
-
 /**
- * @brief Initialize OSD region for VENC channel
+ * @brief Internal helper to show/hide and attach/detach OSD regions
  */
-static int32_t _osd_region_init(RGN_HANDLE handle, RGN_TYPE_E type) {
-    RGN_ATTR_S stRgnAttr;
-    int32_t result;
-    
-    memset(&stRgnAttr, 0, sizeof(RGN_ATTR_S));
-    stRgnAttr.enType = type;
-    
-    if (type == OVERLAY_RGN) {
-        stRgnAttr.unAttr.stOverlay.enPixelFmt = PIXEL_FORMAT_RGB_1555;
-        stRgnAttr.unAttr.stOverlay.u32BgColor = 0xFFFF;  /* White background */
-        stRgnAttr.unAttr.stOverlay.u32Size = 1920 * 1080 / 8;  /* ~250KB for overlay */
-    } else if (type == COVER_RGN) {
-        stRgnAttr.unAttr.stCover.enColor = COVER_COLOR_BLACK;
-    }
-    
-    result = HI_MPI_RGN_Create(handle, &stRgnAttr);
+static int32_t inner_OverLay_ShowRgn(RGN_HANDLE handle, int chn, bool show) {
+    MPP_CHN_S stChn;
+    RGN_CHN_ATTR_S stChnAttr;
+    HI_S32 result;
+
+    stChn.enModId = HI_ID_VENC;
+    stChn.s32DevId = 0;
+    stChn.s32ChnId = chn;
+
+    /* Check if already attached */
+    result = HI_MPI_RGN_GetDisplayAttr(handle, &stChn, &stChnAttr);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][osd] Failed to create region %d: 0x%x\n", handle, result);
-        return result;
+        if (show) {
+            /* Need to attach */
+            memset(&stChnAttr, 0, sizeof(stChnAttr));
+            stChnAttr.bShow = HI_TRUE;
+            stChnAttr.enType = OVERLAY_RGN;
+            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = 0;
+            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = 0;
+            stChnAttr.unChnAttr.stOverlayChn.u32BgAlpha = 128;
+            stChnAttr.unChnAttr.stOverlayChn.u32FgAlpha = 128;
+            stChnAttr.unChnAttr.stOverlayChn.u32Layer = 0;
+            
+            result = HI_MPI_RGN_AttachToChn(handle, &stChn, &stChnAttr);
+            if (result != HI_SUCCESS) {
+                sdk_log("[sdk][osd] HI_MPI_RGN_AttachToChn failed: 0x%x\n", result);
+                return LOCALSDK_ERROR;
+            }
+        }
+    } else {
+        /* Update visibility */
+        stChnAttr.bShow = show ? HI_TRUE : HI_FALSE;
+        HI_MPI_RGN_SetDisplayAttr(handle, &stChn, &stChnAttr);
     }
-    
-    return HI_SUCCESS;
+
+    return LOCALSDK_OK;
 }
 
 /**
- * @brief Set OSD parameters via HISILICON RGN
+ * @brief Initialize an OSD region
+ */
+static int32_t sdk_osd_region_init(RGN_HANDLE handle, uint32_t width, uint32_t height) {
+    RGN_ATTR_S stRgnAttr;
+    HI_S32 result;
+
+    memset(&stRgnAttr, 0, sizeof(stRgnAttr));
+    stRgnAttr.enType = OVERLAY_RGN;
+    stRgnAttr.unAttr.stOverlay.enPixelFmt = PIXEL_FORMAT_RGB_1555;
+    stRgnAttr.unAttr.stOverlay.stSize.u32Width = width;
+    stRgnAttr.unAttr.stOverlay.stSize.u32Height = height;
+    stRgnAttr.unAttr.stOverlay.u32BgColor = 0; /* Transparent */
+
+    result = HI_MPI_RGN_Create(handle, &stRgnAttr);
+    if (result != HI_SUCCESS && result != HI_ERR_RGN_EXIST) {
+        sdk_log("[sdk][osd] HI_MPI_RGN_Create failed: 0x%x\n", result);
+        return LOCALSDK_ERROR;
+    }
+    return LOCALSDK_OK;
+}
+
+/**
+ * @brief Set OSD parameters
  */
 int local_sdk_video_osd_set_parameters(int chn, LOCALSDK_OSD_OPTIONS *options) {
-    RGN_CHN_ATTR_S stChnAttr;
-    int32_t result;
-    MPP_CHN_S stChn;
+    OSD_CHANNEL_PARAMS *params = sdk_osd_get_params(chn);
+    if (!params || !options) return LOCALSDK_ERROR;
+
+    sdk_log("[sdk][osd] Setting OSD parameters for channel %d\n", chn);
+    memcpy(&params->opts, options, sizeof(LOCALSDK_OSD_OPTIONS));
     
-    if (chn < 0 || chn > 1 || !options) {
-        sdk_log("[sdk][osd] Invalid channel or options\n");
-        return LOCALSDK_ERROR;
-    }
-    
-    sdk_log("[sdk][osd] Setting parameters for channel %d\n", chn);
-    
-    /* Configure MPP channel (VENC) */
-    stChn.enModType = HI_ID_VENC;
-    stChn.s32DevId = 0;
-    stChn.s32ChnId = chn;
-    
-    memset(&stChnAttr, 0, sizeof(RGN_CHN_ATTR_S));
-    stChnAttr.bShow = HI_TRUE;
-    stChnAttr.enType = OVERLAY_RGN;
-    stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = options->x;
-    stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = options->y;
-    stChnAttr.unChnAttr.stOverlayChn.u32BgAlpha = 128;
-    stChnAttr.unChnAttr.stOverlayChn.u32FgAlpha = 128;
-    
-    result = HI_MPI_RGN_SetDisplayAttr(g_logoRgnHandle, &stChn, &stChnAttr);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][osd] Failed to set display attributes: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
+    /* Force re-init of regions if needed (simplified) */
+    params->timestamp_en = 1;
+    params->logo_en = 1;
+    params->rects_en = 1;
     
     return LOCALSDK_OK;
 }
 
 /**
- * @brief Display OEM logo (MI branding) using HISILICON RGN
+ * @brief Update MI logo visibility
  */
 int local_sdk_video_osd_update_logo(int chn, bool state) {
-    RGN_CHN_ATTR_S stChnAttr;
-    int32_t result;
-    MPP_CHN_S stChn;
-    
-    sdk_log("[sdk][osd] OEM logo %s on channel %d\n", state ? "displayed" : "hidden", chn);
-    
-    /* Initialize region if not done */
-    if (!g_osdInitialized) {
-        result = _osd_region_init(g_logoRgnHandle, OVERLAY_RGN);
-        if (result != HI_SUCCESS) {
-            return LOCALSDK_ERROR;
-        }
-        g_osdInitialized = 1;
+    OSD_CHANNEL_PARAMS *params = sdk_osd_get_params(chn);
+    if (!params) return LOCALSDK_ERROR;
+
+    if (params->logo_hdl == 0) {
+        params->logo_hdl = chn * 3 + 1;
+        sdk_osd_region_init(params->logo_hdl, 128, 64);
     }
-    
-    /* Configure VENC channel */
-    stChn.enModType = HI_ID_VENC;
-    stChn.s32DevId = 0;
-    stChn.s32ChnId = chn;
-    
-    /* Get current display attributes */
-    result = HI_MPI_RGN_GetDisplayAttr(g_logoRgnHandle, &stChn, &stChnAttr);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][osd] Failed to get display attributes: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    /* Update visibility */
-    stChnAttr.bShow = state ? HI_TRUE : HI_FALSE;
-    
-    result = HI_MPI_RGN_SetDisplayAttr(g_logoRgnHandle, &stChn, &stChnAttr);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][osd] Failed to update display attributes: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    return LOCALSDK_OK;
+
+    return inner_OverLay_ShowRgn(params->logo_hdl, chn, state);
 }
 
 /**
- * @brief Display date and time on video via HISILICON RGN
+ * @brief Update timestamp on OSD
  */
 int local_sdk_video_osd_update_timestamp(int chn, bool state, struct tm *timestamp) {
-    RGN_CHN_ATTR_S stChnAttr;
-    RGN_CANVAS_INFO_S stCanvasInfo;
-    int32_t result;
-    MPP_CHN_S stChn;
-    char timeStr[64];
-    
-    sdk_log("[sdk][osd] Timestamp %s on channel %d\n", state ? "enabled" : "disabled", chn);
-    
-    /* Initialize time region if needed */
-    if (!g_osdInitialized) {
-        result = _osd_region_init(g_timeRgnHandle, OVERLAY_RGN);
-        if (result != HI_SUCCESS) {
-            return LOCALSDK_ERROR;
+    OSD_CHANNEL_PARAMS *params = sdk_osd_get_params(chn);
+    RGN_CANVAS_INFO_S stCanvas;
+    HI_S32 result;
+
+    if (!params) return LOCALSDK_ERROR;
+
+    if (params->timestamp_hdl == 0) {
+        params->timestamp_hdl = chn * 3 + 0;
+        sdk_osd_region_init(params->timestamp_hdl, 400, 40);
+    }
+
+    if (state) {
+        result = HI_MPI_RGN_GetCanvasInfo(params->timestamp_hdl, &stCanvas);
+        if (result == HI_SUCCESS) {
+            /* TODO: Implement bitmap text rendering here */
+            /* For now, just clear/fill a small area to show it works */
+            memset((void *)stCanvas.u64VirtAddr, 0, stCanvas.u32Stride * stCanvas.stSize.u32Height);
+            HI_MPI_RGN_UpdateCanvas(params->timestamp_hdl);
         }
     }
-    
-    /* Configure VENC channel */
-    stChn.enModType = HI_ID_VENC;
-    stChn.s32DevId = 0;
-    stChn.s32ChnId = chn;
-    
-    /* Get canvas info for drawing */
-    result = HI_MPI_RGN_GetCanvasInfo(g_timeRgnHandle, &stCanvasInfo);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][osd] Failed to get canvas info: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    /* Format timestamp string */
-    if (timestamp) {
-        snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d",
-                 timestamp->tm_year + 1900, timestamp->tm_mon + 1, timestamp->tm_mday,
-                 timestamp->tm_hour, timestamp->tm_min, timestamp->tm_sec);
-    } else {
-        time_t now = time(NULL);
-        struct tm *tm_info = localtime(&now);
-        snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d",
-                 tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
-                 tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
-    }
-    
-    sdk_log("[sdk][osd] Time string: %s\n", timeStr);
-    
-    /* TODO: Draw text on canvas and update */
-    
-    /* Update canvas */
-    result = HI_MPI_RGN_UpdateCanvas(g_timeRgnHandle);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][osd] Failed to update canvas: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    /* Set display attributes */
-    result = HI_MPI_RGN_GetDisplayAttr(g_timeRgnHandle, &stChn, &stChnAttr);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][osd] Failed to get display attributes: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    stChnAttr.bShow = state ? HI_TRUE : HI_FALSE;
-    stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = 10;
-    stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = 10;
-    
-    result = HI_MPI_RGN_SetDisplayAttr(g_timeRgnHandle, &stChn, &stChnAttr);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][osd] Failed to set display attributes: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    return LOCALSDK_OK;
+
+    return inner_OverLay_ShowRgn(params->timestamp_hdl, chn, state);
 }
 
 /**
- * @brief Display multiple rectangles on video via HISILICON RGN
+ * @brief Update multiple rectangles (motion detection)
  */
 int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECTANGLES *rectangles) {
-    RGN_CHN_ATTR_S stChnAttr;
-    int32_t result;
-    MPP_CHN_S stChn;
-    
-    sdk_log("[sdk][osd] Rectangle display %s on channel %d\n", state ? "enabled" : "disabled", chn);
-    
-    /* Initialize rectangle region if needed */
-    if (!g_osdInitialized) {
-        result = _osd_region_init(g_rectRgnHandle, COVER_RGN);
-        if (result != HI_SUCCESS) {
-            return LOCALSDK_ERROR;
+    OSD_CHANNEL_PARAMS *params = sdk_osd_get_params(chn);
+    RGN_CANVAS_INFO_S stCanvas;
+    HI_S32 result;
+
+    if (!params) return LOCALSDK_ERROR;
+
+    if (params->rects_hdl == 0) {
+        params->rects_hdl = chn * 3 + 2;
+        /* Create a full-screen transparent overlay for rectangles */
+        sdk_osd_region_init(params->rects_hdl, 1920, 1080);
+    }
+
+    if (state && rectangles) {
+        result = HI_MPI_RGN_GetCanvasInfo(params->rects_hdl, &stCanvas);
+        if (result == HI_SUCCESS) {
+            uint16_t *pData = (uint16_t *)stCanvas.u64VirtAddr;
+            uint32_t stride = stCanvas.u32Stride / 2;
+            
+            /* Clear canvas */
+            memset(pData, 0, stCanvas.u32Stride * stCanvas.stSize.u32Height);
+            
+            /* Draw each rectangle */
+            for (uint32_t i = 0; i < rectangles->count && i < LOCALSDK_ALARM_MAXIMUM_OBJECTS; i++) {
+                uint32_t x = rectangles->objects[i].x;
+                uint32_t y = rectangles->objects[i].y;
+                uint32_t w = rectangles->objects[i].width;
+                uint32_t h = rectangles->objects[i].height;
+                uint16_t color = (rectangles->objects[i].color == LOCALSDK_OSD_COLOR_ORANGE) ? 0xFC00 : 0x83E0;
+
+                /* Surgical drawing of 4 lines per rect */
+                for (uint32_t j = 0; j < w && (x+j) < 1920; j++) {
+                    if (y < 1080) pData[y * stride + (x+j)] = color;
+                    if ((y+h) < 1080) pData[(y+h) * stride + (x+j)] = color;
+                }
+                for (uint32_t j = 0; j < h && (y+j) < 1080; j++) {
+                    if (x < 1920) pData[(y+j) * stride + x] = color;
+                    if ((x+w) < 1920) pData[(y+j) * stride + (x+w)] = color;
+                }
+            }
+            HI_MPI_RGN_UpdateCanvas(params->rects_hdl);
         }
     }
-    
-    /* Configure VENC channel */
-    stChn.enModType = HI_ID_VENC;
-    stChn.s32DevId = 0;
-    stChn.s32ChnId = chn;
-    
-    /* Get current display attributes */
-    result = HI_MPI_RGN_GetDisplayAttr(g_rectRgnHandle, &stChn, &stChnAttr);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][osd] Failed to get display attributes: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    /* Update visibility and position if rectangles provided */
-    stChnAttr.bShow = state ? HI_TRUE : HI_FALSE;
-    
-    if (rectangles && state) {
-        stChnAttr.unChnAttr.stCoverChn.stRect.s32X = rectangles->x;
-        stChnAttr.unChnAttr.stCoverChn.stRect.s32Y = rectangles->y;
-        stChnAttr.unChnAttr.stCoverChn.stRect.u32Width = rectangles->width;
-        stChnAttr.unChnAttr.stCoverChn.stRect.u32Height = rectangles->height;
-    }
-    
-    result = HI_MPI_RGN_SetDisplayAttr(g_rectRgnHandle, &stChn, &stChnAttr);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][osd] Failed to update display attributes: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    return LOCALSDK_OK;
+
+    return inner_OverLay_ShowRgn(params->rects_hdl, chn, state);
 }
 
 /* ============================================================================
@@ -2018,8 +2593,8 @@ int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECT
  * @brief Control indicator LEDs (orange and blue)
  */
 int local_sdk_indicator_led_option(bool orange, bool blue) {
-    sdk_log("[sdk][hw] LED control - orange: %s, blue: %s\n", 
-            orange ? "on" : "off", blue ? "on" : "off");
+    gpio_write(GPIO_PIN_ORANGE_LED, orange ? 1 : 0);
+    gpio_write(GPIO_PIN_BLUE_LED,   blue   ? 1 : 0);
     return LOCALSDK_OK;
 }
 
@@ -2027,7 +2602,11 @@ int local_sdk_indicator_led_option(bool orange, bool blue) {
  * @brief Setup keydown callback with timeout
  */
 int local_sdk_setup_keydown_set_callback(int timeout, int (*callback)()) {
-    sdk_log("[sdk][hw] Setting keydown callback with timeout: %d ms\n", timeout);
+    printf("[SDK-THREAD]dbg: Set setup_keydown Callback Doing...\n");
+    pthread_mutex_lock(&g_platformMutex);
+    g_keydownCb = callback;
+    g_keydownTimeout = timeout;
+    pthread_mutex_unlock(&g_platformMutex);
     return LOCALSDK_OK;
 }
 
@@ -2036,42 +2615,52 @@ int local_sdk_setup_keydown_set_callback(int timeout, int (*callback)()) {
    ============================================================================ */
 
 /**
- * @brief Set daytime mode (color image)
+ * @brief Set daytime mode (color image) via ISP
  */
 int local_sdk_video_set_daytime_mode() {
-    sdk_log("[sdk][night] Setting daytime mode (color)\n");
+    ISP_SATURATION_ATTR_S stSatAttr;
+    if (HI_MPI_ISP_GetSaturationAttr(0, &stSatAttr) == HI_SUCCESS) {
+        stSatAttr.enOpType = OP_TYPE_AUTO;
+        HI_MPI_ISP_SetSaturationAttr(0, &stSatAttr);
+    }
     return LOCALSDK_OK;
 }
 
 /**
- * @brief Set night mode (grayscale image)
+ * @brief Set night mode (grayscale image) via ISP
  */
 int local_sdk_video_set_night_mode() {
-    sdk_log("[sdk][night] Setting night mode (grayscale)\n");
+    ISP_SATURATION_ATTR_S stSatAttr;
+    if (HI_MPI_ISP_GetSaturationAttr(0, &stSatAttr) == HI_SUCCESS) {
+        stSatAttr.enOpType = OP_TYPE_MANUAL;
+        stSatAttr.stManual.u8Saturation = 0; /* grayscale */
+        HI_MPI_ISP_SetSaturationAttr(0, &stSatAttr);
+    }
     return LOCALSDK_OK;
 }
 
 /**
- * @brief Enable automatic night mode switching
+ * @brief Enable automatic night mode (photo-sensitive sensor drives sceneauto)
  */
 int local_sdk_auto_night_light() {
-    sdk_log("[sdk][night] Enabling auto night mode\n");
+    /* sceneauto library handles auto switching via photo sensor callback */
     return LOCALSDK_OK;
 }
 
 /**
- * @brief Enable manual night mode
+ * @brief Enable manual night mode (IR LED on)
  */
 int local_sdk_open_night_light() {
-    sdk_log("[sdk][night] Opening night light (manual)\n");
+    gpio_write(GPIO_PIN_IR_LED_A, 1);
     return LOCALSDK_OK;
 }
 
 /**
- * @brief Disable manual night mode
+ * @brief Disable night light (IR LED off) - from trace: gpio52=0, gpio53=0
  */
 int local_sdk_close_night_light() {
-    sdk_log("[sdk][night] Closing night light\n");
+    gpio_write(GPIO_PIN_IR_LED_A, 0);
+    gpio_write(GPIO_PIN_IR_LED_B, 0);
     return LOCALSDK_OK;
 }
 
@@ -2079,23 +2668,30 @@ int local_sdk_close_night_light() {
  * @brief Set night mode state change callback
  */
 int local_sdk_night_state_set_callback(int (*callback)(int state)) {
-    sdk_log("[sdk][night] Setting night state callback\n");
+    printf("[SDK-THREAD]dbg: Set night_state Callback Doing...\n");
+    g_nightStateCb = callback;
     return LOCALSDK_OK;
 }
 
 /**
- * @brief Open IR-cut filter
+ * @brief Open IR-cut filter (day->night: gpio70=1 delay gpio68=1)
  */
 int local_sdk_open_ircut() {
-    sdk_log("[sdk][night] Opening IR-cut filter\n");
+    printf("<>===================< IRcut on >==================<>\n");
+    gpio_write(GPIO_PIN_IRCUT_A, 1);
+    usleep(IRCUT_MOTOR_STEP_US);
+    gpio_write(GPIO_PIN_IRCUT_B, 1);
     return LOCALSDK_OK;
 }
 
 /**
- * @brief Close IR-cut filter
+ * @brief Close IR-cut filter (night->day: gpio70=0 delay gpio68=0)
  */
 int local_sdk_close_ircut() {
-    sdk_log("[sdk][night] Closing IR-cut filter\n");
+    printf("<>===================< IRcut off >=================<>\n");
+    gpio_write(GPIO_PIN_IRCUT_A, 0);
+    usleep(IRCUT_MOTOR_STEP_US);
+    gpio_write(GPIO_PIN_IRCUT_B, 0);
     return LOCALSDK_OK;
 }
 
