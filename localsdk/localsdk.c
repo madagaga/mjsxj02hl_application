@@ -62,6 +62,14 @@ extern int sensor_unregister_callback(void);
 static void sdk_video_shutdown_channel(int chn);
 static int sdk_video_unbind_vi_vpss(void);
 
+/* Video global state - declared here so localsdk_init/destory can access them */
+static VPSS_GRP g_vpssGrp = 0;
+static VPSS_CHN g_vpssChn[4] = {0, 1, 2, 3};
+static VENC_CHN g_vencChn[2] = {0, 1};
+static VI_DEV   g_viDev = 0;
+static VI_CHN   g_viChn = 0;
+static int32_t  g_videoStarted[2] = {0, 0};
+
 /* ============================================================================
    DEFINES AND CONSTANTS
    ============================================================================ */
@@ -553,13 +561,7 @@ int localsdk_get_version() {
    VIDEO SUBSYSTEM - HISILICON IMPLEMENTATION
    ============================================================================ */
 
-/* Global video state */
-static VPSS_GRP g_vpssGrp = 0;
-static VPSS_CHN g_vpssChn[4] = {0, 1, 2, 3};
-static VENC_CHN g_vencChn[2] = {0, 1};
-static VI_DEV g_viDev = 0;
-static VI_CHN g_viChn = 0;
-static int32_t g_videoStarted[2] = {0, 0};
+/* Global video state (declared at top of file) */
 static int32_t (*g_encCb[2])(LOCALSDK_H26X_FRAME_INFO *frameInfo) = {NULL, NULL};
 static int32_t (*g_yuvCb[2])(LOCALSDK_H26X_FRAME_INFO *frameInfo) = {NULL, NULL};
 static int (*g_algoRegisterCb)(void) = NULL;
@@ -797,19 +799,12 @@ static int sdk_video_mipi_init_f22(void) {
     int fd;
 
     memset(&stComboAttr, 0, sizeof(stComboAttr));
-    stComboAttr.devno       = 0;
-    stComboAttr.input_mode  = INPUT_MODE_MIPI;
-    stComboAttr.data_rate   = MIPI_DATA_RATE_X1;
-    stComboAttr.img_rect.x      = 0;
-    stComboAttr.img_rect.y      = 0;
-    stComboAttr.img_rect.width  = 1920;
-    stComboAttr.img_rect.height = 1080;
-    stComboAttr.mipi_attr.input_data_type = DATA_TYPE_RAW_10BIT;
-    stComboAttr.mipi_attr.wdr_mode        = HI_MIPI_WDR_MODE_NONE;
-    stComboAttr.mipi_attr.lane_id[0]      = 0;
-    stComboAttr.mipi_attr.lane_id[1]      = 2;
-    stComboAttr.mipi_attr.lane_id[2]      = -1;
-    stComboAttr.mipi_attr.lane_id[3]      = -1;
+    stComboAttr.input_mode              = INPUT_MODE_MIPI;
+    stComboAttr.mipi_attr.raw_data_type = RAW_DATA_10BIT;
+    stComboAttr.mipi_attr.lane_id[0]    = 0;
+    stComboAttr.mipi_attr.lane_id[1]    = 2;
+    stComboAttr.mipi_attr.lane_id[2]    = -1;
+    stComboAttr.mipi_attr.lane_id[3]    = -1;
 
     fd = open("/dev/hi_mipi", O_RDWR);
     if (fd < 0) {
@@ -1143,11 +1138,14 @@ int local_sdk_video_init(int fps) {
 
     /* VPSS group */
     memset(&stGrpAttr, 0, sizeof(VPSS_GRP_ATTR_S));
-    stGrpAttr.enPixFmt = PIXEL_FORMAT_YVU_SEMIPLANAR_420;
-    stGrpAttr.u32MaxW = 1920;
-    stGrpAttr.u32MaxH = 1080;
-    stGrpAttr.bNrEn = HI_TRUE;
-    stGrpAttr.stNrAttr.enNrType = VPSS_NR_TYPE_VIDEO;
+    stGrpAttr.enPixFmt  = PIXEL_FORMAT_YUV_SEMIPLANAR_420;
+    stGrpAttr.u32MaxW   = 1920;
+    stGrpAttr.u32MaxH   = 1080;
+    stGrpAttr.bNrEn     = HI_TRUE;
+    stGrpAttr.bIeEn     = HI_FALSE;
+    stGrpAttr.bDciEn    = HI_FALSE;
+    stGrpAttr.bHistEn   = HI_FALSE;
+    stGrpAttr.enDieMode = VPSS_DIE_MODE_NODIE;
 
     result = HI_MPI_VPSS_CreateGrp(g_vpssGrp, &stGrpAttr);
     if (result != HI_SUCCESS) {
@@ -1178,33 +1176,44 @@ int local_sdk_video_init(int fps) {
  */
 int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     VPSS_CHN_ATTR_S stChnAttr;
+    VPSS_CHN_MODE_S stChnMode;
     int32_t result;
-    
+
     if (chn < 0 || chn > 3 || !options) {
         sdk_log("[sdk][video] Invalid channel %d or options\n", chn);
         return LOCALSDK_ERROR;
     }
-    
+
     sdk_log("[sdk][video] Creating VPSS channel %d\n", chn);
-    
-    /* Configure channel attributes */
+
+    /* Channel attributes (frame rate only) */
     memset(&stChnAttr, 0, sizeof(VPSS_CHN_ATTR_S));
-    stChnAttr.u32Width = (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) ? 1920 : 640;
-    stChnAttr.u32Height = (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) ? 1080 : 360;
-    stChnAttr.enChnMode = VPSS_CHN_MODE_USER;
-    stChnAttr.enPixelFormat = PIXEL_FORMAT_YVU_SEMIPLANAR_420;
-    stChnAttr.u32Depth = 0;
-    stChnAttr.bMirror = HI_FALSE;
-    stChnAttr.bFlip = HI_FALSE;
-    stChnAttr.s32Angle = 0;
-    
-    /* Set channel attributes */
+    stChnAttr.s32SrcFrameRate = -1;
+    stChnAttr.s32DstFrameRate = -1;
+    stChnAttr.bMirror = options->mirror ? HI_TRUE : HI_FALSE;
+    stChnAttr.bFlip   = options->flip   ? HI_TRUE : HI_FALSE;
+
+    /* Channel mode (size + format) */
+    memset(&stChnMode, 0, sizeof(VPSS_CHN_MODE_S));
+    stChnMode.enChnMode      = VPSS_CHN_MODE_USER;
+    stChnMode.bDouble        = HI_FALSE;
+    stChnMode.enPixelFormat  = PIXEL_FORMAT_YUV_SEMIPLANAR_420;
+    stChnMode.enCompressMode = COMPRESS_MODE_NONE;
+    stChnMode.u32Width  = (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) ? 1920 : 640;
+    stChnMode.u32Height = (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) ? 1080 : 360;
+
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] Failed to set channel attributes: 0x%x\n", result);
+        sdk_log("[sdk][video] Failed to set channel attr: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
+    result = HI_MPI_VPSS_SetChnMode(g_vpssGrp, g_vpssChn[chn], &stChnMode);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] Failed to set channel mode: 0x%x\n", result);
+        return LOCALSDK_ERROR;
+    }
+
     /* Enable channel */
     result = HI_MPI_VPSS_EnableChn(g_vpssGrp, g_vpssChn[chn]);
     if (result != HI_SUCCESS) {
@@ -1224,39 +1233,41 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
  */
 int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     VPSS_CHN_ATTR_S stChnAttr;
+    VPSS_CHN_MODE_S stChnMode;
     int32_t result;
     int wasStarted;
-    
+
     if (chn < 0 || chn > 3 || !options) {
         sdk_log("[sdk][video] Invalid channel or options\n");
         return LOCALSDK_ERROR;
     }
-    
+
     sdk_log("[sdk][video] Setting parameters for channel %d\n", chn);
-    
-    /* Get current attributes */
+
     result = HI_MPI_VPSS_GetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] Failed to get channel attributes: 0x%x\n", result);
+        sdk_log("[sdk][video] Failed to get channel attr: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
-    /* Update dimensions if specified */
-    if (options->resolution == LOCALSDK_VIDEO_RESOLUTION_1920x1080) {
-        stChnAttr.u32Width = 1920;
-        stChnAttr.u32Height = 1080;
-    } else if (options->resolution == LOCALSDK_VIDEO_RESOLUTION_640x360) {
-        stChnAttr.u32Width = 640;
-        stChnAttr.u32Height = 360;
-    }
+
     stChnAttr.bMirror = options->mirror ? HI_TRUE : HI_FALSE;
-    stChnAttr.bFlip = options->flip ? HI_TRUE : HI_FALSE;
-    
-    /* Update attributes */
+    stChnAttr.bFlip   = options->flip   ? HI_TRUE : HI_FALSE;
+
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] Failed to set channel attributes: 0x%x\n", result);
+        sdk_log("[sdk][video] Failed to set channel attr: 0x%x\n", result);
         return LOCALSDK_ERROR;
+    }
+
+    /* Update channel mode for resolution change */
+    result = HI_MPI_VPSS_GetChnMode(g_vpssGrp, g_vpssChn[chn], &stChnMode);
+    if (result == HI_SUCCESS) {
+        if (options->resolution == LOCALSDK_VIDEO_RESOLUTION_1920x1080) {
+            stChnMode.u32Width = 1920; stChnMode.u32Height = 1080;
+        } else if (options->resolution == LOCALSDK_VIDEO_RESOLUTION_640x360) {
+            stChnMode.u32Width = 640; stChnMode.u32Height = 360;
+        }
+        HI_MPI_VPSS_SetChnMode(g_vpssGrp, g_vpssChn[chn], &stChnMode);
     }
     
     /* Update video parameters */
@@ -1312,7 +1323,7 @@ int local_sdk_video_start(int chn) {
     }
 
     /* Request I-frame to start streaming */
-    result = HI_MPI_VENC_RequestIDR(g_vencChn[chn]);
+    result = HI_MPI_VENC_RequestIDR(g_vencChn[chn], HI_TRUE);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] Failed to request IDR: 0x%x\n", result);
     }
@@ -1448,7 +1459,7 @@ int local_sdk_video_force_I_frame(int chn) {
     
     sdk_log("[sdk][video] Requesting I-frame on channel %d\n", chn);
     
-    result = HI_MPI_VENC_RequestIDR(g_vencChn[chn]);
+    result = HI_MPI_VENC_RequestIDR(g_vencChn[chn], HI_TRUE);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] Failed to request IDR: 0x%x\n", result);
         return LOCALSDK_ERROR;
@@ -1651,7 +1662,7 @@ int local_sdk_video_set_brightness(int param_1, int param_2, int param_3, int pa
     }
     
     /* Update brightness parameter */
-    stExpAttr.stAERoute.u32ShutterTime = param_1;
+    stExpAttr.stManual.u32ExpTime = param_1;
     
     /* Set ISP exposure attributes */
     result = HI_MPI_ISP_SetExposureAttr(0, &stExpAttr);
@@ -1737,12 +1748,10 @@ int local_sdk_video_set_fps(int param_1, int param_2, int param_3, int param_4) 
  * @brief Set video bitrate
  */
 int local_sdk_video_set_kbps(int param_1, int param_2) {
-    VENC_RC_PARAM_S stRcParam;
-    int32_t result;
     LOCALSDK_VIDEO_OPTIONS *options;
-    
+
     sdk_log("[sdk][video] Setting bitrate: %d kbps\n", param_2);
-    
+
     if (param_1 < 0 || param_1 > 1) {
         sdk_log("[sdk][video] Invalid channel for bitrate: %d\n", param_1);
         return LOCALSDK_ERROR;
@@ -1751,27 +1760,9 @@ int local_sdk_video_set_kbps(int param_1, int param_2) {
     options = sdk_video_get_options(param_1);
     if (options) {
         options->bitrate = (uint32_t)param_2;
-        if (!g_videoStarted[param_1]) {
-            return LOCALSDK_OK;
-        }
     }
 
-    result = HI_MPI_VENC_GetRcParam(g_vencChn[param_1], &stRcParam);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] Failed to get RC params: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    stRcParam.u32StatTime = 1;
-    stRcParam.u32SrcFrmRate = options ? options->fps : LOCALSDK_VIDEO_FRAMERATE;
-    stRcParam.u32TargetBitrate = param_2 * 1000;  /* Convert kbps to bps */
-    
-    result = HI_MPI_VENC_SetRcParam(g_vencChn[param_1], &stRcParam);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] Failed to set RC params: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
+    /* Bitrate change takes effect on next channel start */
     return LOCALSDK_OK;
 }
 
@@ -2259,7 +2250,7 @@ int local_sdk_speaker_feed_pcm_data(void *data, int size) {
     stFrame.enSoundmode = AUDIO_SOUND_MODE_MONO;
     stFrame.u32Len = size;
     stFrame.pVirAddr[0] = (HI_U8 *)data;
-    stFrame.u64PhyAddr[0] = 0; /* MPI will handle it if mapped correctly */
+    stFrame.u32PhyAddr[0] = 0; /* MPI will handle it if mapped correctly */
 
     result = HI_MPI_AO_SendFrame(g_aoDev, g_aoChn, &stFrame, 1000);
     return (result == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
@@ -2539,7 +2530,7 @@ int local_sdk_video_osd_update_timestamp(int chn, bool state, struct tm *timesta
         if (result == HI_SUCCESS) {
             /* TODO: Implement bitmap text rendering here */
             /* For now, just clear/fill a small area to show it works */
-            memset((void *)stCanvas.u64VirtAddr, 0, stCanvas.u32Stride * stCanvas.stSize.u32Height);
+            memset((void *)stCanvas.u32VirtAddr, 0, stCanvas.u32Stride * stCanvas.stSize.u32Height);
             HI_MPI_RGN_UpdateCanvas(params->timestamp_hdl);
         }
     }
@@ -2566,7 +2557,7 @@ int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECT
     if (state && rectangles) {
         result = HI_MPI_RGN_GetCanvasInfo(params->rects_hdl, &stCanvas);
         if (result == HI_SUCCESS) {
-            uint16_t *pData = (uint16_t *)stCanvas.u64VirtAddr;
+            uint16_t *pData = (uint16_t *)stCanvas.u32VirtAddr;
             uint32_t stride = stCanvas.u32Stride / 2;
             
             /* Clear canvas */
@@ -3336,30 +3327,25 @@ int* local_sdk_device_close(int arg1) {
  * via callback or stores them for later processing.
  */
 int video_yuv_stream_thread(int32_t* arg1) {
-    VPSS_GRP_FRAME_S stGrpFrame;
-    VIDEO_FRAME_S *pstFrame;
+    VIDEO_FRAME_INFO_S stFrameInfo;
     int32_t result;
     int32_t s32Count = 0;
-    
+
     sdk_log("[sdk][video_thread] YUV stream thread started\n");
-    
+
     while (sdk_video_any_started()) {
-        /* Get frame from VPSS group */
-        memset(&stGrpFrame, 0, sizeof(VPSS_GRP_FRAME_S));
-        stGrpFrame.stVFrame.u32PoolId = 0;
-        
-        result = HI_MPI_VPSS_GetChnFrame(0, 0, &pstFrame, 1000);
+        memset(&stFrameInfo, 0, sizeof(VIDEO_FRAME_INFO_S));
+
+        result = HI_MPI_VPSS_GetChnFrame(0, 0, &stFrameInfo, 1000);
         if (result != HI_SUCCESS) {
             usleep(USLEEP_50MS);
             continue;
         }
-        
-        /* TODO: Send to YUV callback or process frame */
-        sdk_log("[sdk][video_thread] YUV frame captured: %ux%u\n", 
-                pstFrame->u32Width, pstFrame->u32Height);
-        
-        /* Release frame back to pool */
-        result = HI_MPI_VPSS_ReleaseChnFrame(0, 0, pstFrame);
+
+        sdk_log("[sdk][video_thread] YUV frame: %ux%u\n",
+                stFrameInfo.stVFrame.u32Width, stFrameInfo.stVFrame.u32Height);
+
+        result = HI_MPI_VPSS_ReleaseChnFrame(0, 0, &stFrameInfo);
         if (result != HI_SUCCESS) {
             sdk_log("[sdk][video_thread] Failed to release frame: 0x%x\n", result);
         }
@@ -3413,7 +3399,7 @@ void video_enc_stream_thread(int32_t* arg1) {
             /* Identify frame type */
             if (pstPack->DataType.enH264EType == H264E_NALU_SPS ||
                 pstPack->DataType.enH264EType == H264E_NALU_PPS ||
-                pstPack->DataType.enH264EType == H264E_NALU_IDR) {
+                pstPack->DataType.enH264EType == H264E_NALU_ISLICE) {
                 sdk_log("[sdk][video_thread] IDR/SPS/PPS frame: %u bytes\n", 
                         pstPack->u32Len);
             } else {
