@@ -1,17 +1,17 @@
 /******************************************************************************
 
-  Copyright (C), 2001-2018, Hisilicon Tech. Co., Ltd.
+  Copyright (C), 2001-2011, Hisilicon Tech. Co., Ltd.
 
  ******************************************************************************
   File Name     : hi_comm_ao.h
   Version       : Initial Draft
   Author        : Hisilicon multimedia software group
   Created       : 2009/5/5
-  Description   :
+  Description   : 
   History       :
   1.Date        : 2009/5/5
     Author      : p00123320
-    Modification: Created file
+    Modification: Created file 
 ******************************************************************************/
 
 

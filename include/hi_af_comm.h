@@ -1,16 +1,16 @@
 /******************************************************************************
 
-  Copyright (C), 2016, Hisilicon Tech. Co., Ltd.
+  Copyright (C), 2001-2011, Hisilicon Tech. Co., Ltd.
 
  ******************************************************************************
   File Name     : hi_af_comm.h
   Version       : Initial Draft
   Author        : Hisilicon multimedia software group
   Created       : 2012/12/20
-  Description   :
+  Description   : 
   History       :
   1.Date        : 2012/12/20
-    Author      :
+    Author      : n00168968
     Modification: Created file
 
 ******************************************************************************/
@@ -21,7 +21,7 @@
 
 #ifdef __cplusplus
 #if __cplusplus
-extern "C" {
+extern "C"{
 #endif
 #endif /* End of #ifdef __cplusplus */
 

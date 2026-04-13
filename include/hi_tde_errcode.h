@@ -1,10 +1,10 @@
 /******************************************************************************
-  Copyright (C), 2016-2018, Hisilicon Tech. Co., Ltd.
+  Copyright (C), 2001-2011, Hisilicon Tech. Co., Ltd.
  ******************************************************************************
  File Name     : tde_errcode.h
 Version       : Initial Draft
-Author        : sdk
-Created       :
+Author        : Hisilicon multimedia software group
+Created       : 2005/4/23
 Last Modified :
 Description   : err code define
 Function List :
@@ -13,20 +13,22 @@ History       : May modify the code to errcode.h FOR hi3110
 #ifndef __TDE_ERRCODE_H__
 #define __TDE_ERRCODE_H__
 
+//#include "hi_debug.h"
 #include "hi_type.h"
 
 #ifdef __cplusplus
 #if __cplusplus
-extern "C" {
+extern "C"{
 #endif
 #endif /* __cplusplus */
 
-/* tde start err no. */
+//#define HI_ID_TDE 100
+/* tde start err no. */ 
 #define HI_ERR_TDE_BASE  ((HI_S32)( ((0x80UL + 0x20UL)<<24) | (100 << 16 ) | (4 << 13) | 1 ))
 
-enum
+enum 
 {
-    HI_ERR_TDE_DEV_NOT_OPEN = HI_ERR_TDE_BASE,  /**<  tde device not open yet */
+    HI_ERR_TDE_DEV_NOT_OPEN = HI_ERR_TDE_BASE,  /**<  tde device not open yet */ 
     HI_ERR_TDE_DEV_OPEN_FAILED,                 /**<  open tde device failed */
     HI_ERR_TDE_NULL_PTR,                        /**<  input parameters contain null ptr */
     HI_ERR_TDE_NO_MEM,                          /**<  malloc failed  */
@@ -38,9 +40,9 @@ enum
     HI_ERR_TDE_JOB_TIMEOUT,                     /**<  blocked job wait timeout */
     HI_ERR_TDE_UNSUPPORTED_OPERATION,           /**<  unsupported operation */
     HI_ERR_TDE_QUERY_TIMEOUT,                    /**<  query time out */
-    HI_ERR_TDE_INTERRUPT              /* blocked job was interrupted */
+    HI_ERR_TDE_INTERRUPT              		/**<   blocked job was interrupted */
 };
-
+    
 
 #ifdef __cplusplus
 #if __cplusplus

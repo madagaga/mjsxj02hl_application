@@ -46,10 +46,21 @@
 #include "mpi_venc.h"
 #include "mpi_vpss.h"
 #include "mpi_vi.h"
+#include "hi_comm_region.h"
+#include "mpi_region.h"
+#include "mpi_vb.h"
+#include "mpi_ai.h"
+#include "mpi_ao.h"
+#include "mpi_aenc.h"
+#include "mpi_adec.h"
 
 /* Sensor library entry points from libsns_f22 / libsns_jxf22 */
 extern int sensor_register_callback(void);
 extern int sensor_unregister_callback(void);
+
+/* Forward declarations for internal video functions */
+static void sdk_video_shutdown_channel(int chn);
+static int sdk_video_unbind_vi_vpss(void);
 
 /* ============================================================================
    DEFINES AND CONSTANTS
@@ -2759,6 +2770,7 @@ int inner_change_resulu_type(int resolution, int *result) {
 static void* g_ivpResourceHandle = NULL;
 static uint32_t g_ivpResourceSize = 0;
 static uint8_t* g_ivpResourceBuffer = NULL;
+static HI_U32 g_ivpPhysAddr = 0;
 static int32_t g_ivpInitialized = 0;
 
 /**
@@ -2831,9 +2843,8 @@ static int32_t sample_ivp_read_file(const char *filename, uint8_t *buffer, uint3
  */
 int32_t sample_ivp_load_resource(const char *oms_file, int32_t chn) {
     uint32_t file_size = 0;
-    uint64_t phys_addr = 0;
-    uint64_t virt_addr = 0;
-    uint32_t virt_size = 0;
+    HI_U32 phys_addr = 0;
+    HI_VOID *virt_addr = NULL;
     int32_t result;
     
     if (!oms_file) {
@@ -2859,29 +2870,30 @@ int32_t sample_ivp_load_resource(const char *oms_file, int32_t chn) {
         return LOCALSDK_ERROR;
     }
     
-    sdk_log("[sdk][ivp] MMZ allocated - Physical: 0x%llx, Virtual: 0x%llx, Size: %u\n",
+    sdk_log("[sdk][ivp] MMZ allocated - Physical: 0x%x, Virtual: %p, Size: %u\n",
             phys_addr, virt_addr, file_size);
-    
+
     /* Read OMS file into memory */
     result = sample_ivp_read_file(oms_file, (uint8_t *)virt_addr, file_size);
     if (result != LOCALSDK_OK) {
         sdk_log("[sdk][ivp] Failed to read OMS file\n");
-        HI_MPI_SYS_MmzFree(phys_addr, virt_addr, file_size);
+        HI_MPI_SYS_MmzFree(phys_addr, virt_addr);
         return LOCALSDK_ERROR;
     }
-    
+
     /* Load resource from memory into IVP */
-    result = hi_ivp_load_resource_from_memory((void *)virt_addr, file_size);
+    result = hi_ivp_load_resource_from_memory(virt_addr, file_size);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] Failed to load resource from memory: 0x%x\n", result);
-        HI_MPI_SYS_MmzFree(phys_addr, virt_addr, file_size);
+        HI_MPI_SYS_MmzFree(phys_addr, virt_addr);
         return LOCALSDK_ERROR;
     }
-    
+
     /* Store resource handle for later cleanup */
-    g_ivpResourceHandle = (void *)virt_addr;
+    g_ivpResourceHandle = virt_addr;
     g_ivpResourceSize = file_size;
     g_ivpResourceBuffer = (uint8_t *)virt_addr;
+    g_ivpPhysAddr = phys_addr;
     
     sdk_log("[sdk][ivp] IVP model loaded successfully\n");
     return LOCALSDK_OK;
@@ -2951,9 +2963,8 @@ int32_t sample_ivp_unload_resource(void) {
     
     /* Free MMZ memory */
     if (g_ivpResourceBuffer) {
-        HI_MPI_SYS_MmzFree((uint64_t)g_ivpResourceBuffer, 
-                          (uint64_t)g_ivpResourceBuffer, 
-                          g_ivpResourceSize);
+        HI_MPI_SYS_MmzFree(g_ivpPhysAddr, g_ivpResourceBuffer);
+        g_ivpPhysAddr = 0;
     }
     
     /* Clear state */
