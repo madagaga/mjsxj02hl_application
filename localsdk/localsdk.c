@@ -27,10 +27,11 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
-#include "hi_mipi.h"
-#include "acodec.h"
+
 
 /* Hisilicon MPP */
+#include "hi_mipi.h"
+#include "acodec.h"
 #include "hi_comm_sys.h"
 #include "hi_comm_isp.h"
 #include "hi_comm_3a.h"
