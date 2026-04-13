@@ -1,7 +1,7 @@
 SKIP_SHARED_LIBS = OFF
 
 CROSS_COMPILE = arm-himix100-linux-
-CCFLAGS = -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations
+CCFLAGS = -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations -I./include
 LDPATH = /opt/hisi-linux/x86-arm/arm-himix100-linux/target/usr/app/lib
 
 CC  = $(CROSS_COMPILE)gcc
