@@ -463,9 +463,9 @@ int localsdk_set_logprintf_func(int (*function)(const char *, ...)) {
 /**
  * @brief Set the shell command execution function
  */
-int localsdk_set_shellcall_func(int *param_1) {
-    if (param_1) {
-        g_sdkShellCall_cb = (int (*)(const char *))param_1;
+int localsdk_set_shellcall_func(int (*callback)(const char *)) {
+    if (callback) {
+        g_sdkShellCall_cb = callback;
         return LOCALSDK_OK;
     }
     return LOCALSDK_ERROR;
