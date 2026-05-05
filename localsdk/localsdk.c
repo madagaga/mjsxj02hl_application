@@ -672,7 +672,7 @@ static void sdk_video_shutdown_channel(int chn) {
         return;
     }
     sdk_video_unbind_vpss_venc(chn, g_vencChn[chn]);
-    HI_MPI_VENC_StopRecvPic(g_vencChn[chn]);
+    HI_MPI_VENC_StopRecvFrame(g_vencChn[chn]);
     HI_MPI_VENC_DestroyChn(g_vencChn[chn]);
     g_videoStarted[chn] = 0;
 }
@@ -783,9 +783,9 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn, LOCALSDK_VIDEO_OPTION
     }
 
     if (!jpeg) {
-        result = HI_MPI_VENC_StartRecvPic(vencChn);
+        result = HI_MPI_VENC_StartRecvFrame(vencChn, NULL);
         if (result != HI_SUCCESS) {
-            sdk_log("[sdk][video] HI_MPI_VENC_StartRecvPic(%d) failed: 0x%x\n", vencChn, result);
+            sdk_log("[sdk][video] HI_MPI_VENC_StartRecvFrame(%d) failed: 0x%x\n", vencChn, result);
             HI_MPI_VENC_DestroyChn(vencChn);
             return LOCALSDK_ERROR;
         }
@@ -1312,7 +1312,7 @@ int local_sdk_video_start(int chn) {
 
     result = sdk_video_bind_vpss_venc(chn, g_vencChn[chn]);
     if (result != LOCALSDK_OK) {
-        HI_MPI_VENC_StopRecvPic(g_vencChn[chn]);
+        HI_MPI_VENC_StopRecvFrame(g_vencChn[chn]);
         HI_MPI_VENC_DestroyChn(g_vencChn[chn]);
         sdk_log("[sdk][video] Failed to bind VPSS->VENC for channel %d\n", chn);
         return LOCALSDK_ERROR;
@@ -1390,8 +1390,8 @@ static void *sdk_video_run_thread(void *arg) {
 
         if (!FD_ISSET(vencFd, &read_fds)) continue;
 
-        VENC_CHN_STAT_S stStat;
-        if (HI_MPI_VENC_Query(vencChn, &stStat) != HI_SUCCESS) continue;
+        VENC_CHN_STATUS_S stStat;
+        if (HI_MPI_VENC_QueryStatus(vencChn, &stStat) != HI_SUCCESS) continue;
         if (stStat.u32CurPacks == 0) continue;
 
         VENC_STREAM_S stStream;
@@ -1474,7 +1474,7 @@ int local_sdk_video_force_I_frame(int chn) {
 int local_sdk_video_get_jpeg(int chn, char *file) {
     FILE *fp;
     VENC_STREAM_S stStream;
-    VENC_CHN_STAT_S stStat;
+    VENC_CHN_STATUS_S stStat;
     VENC_RECV_PIC_PARAM_S stRecvParam;
     int32_t result;
     uint32_t i;
@@ -1518,9 +1518,9 @@ int local_sdk_video_get_jpeg(int chn, char *file) {
 
     memset(&stRecvParam, 0, sizeof(stRecvParam));
     stRecvParam.s32RecvPicNum = 1;
-    result = HI_MPI_VENC_StartRecvPicEx(snapChn, &stRecvParam);
+    result = HI_MPI_VENC_StartRecvFrame(snapChn, &stRecvParam);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] HI_MPI_VENC_StartRecvPicEx failed: 0x%x\n", result);
+        sdk_log("[sdk][video] HI_MPI_VENC_StartRecvFrame(snap) failed: 0x%x\n", result);
         sdk_video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn);
         fclose(fp);
@@ -1530,7 +1530,7 @@ int local_sdk_video_get_jpeg(int chn, char *file) {
     vencFd = HI_MPI_VENC_GetFd(snapChn);
     if (vencFd < 0) {
         sdk_log("[sdk][video] HI_MPI_VENC_GetFd failed for snapshot channel\n");
-        HI_MPI_VENC_StopRecvPic(snapChn);
+        HI_MPI_VENC_StopRecvFrame(snapChn);
         sdk_video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn);
         fclose(fp);
@@ -1544,7 +1544,7 @@ int local_sdk_video_get_jpeg(int chn, char *file) {
     result = select(vencFd + 1, &read_fds, NULL, NULL, &timeout);
     if (result <= 0 || !FD_ISSET(vencFd, &read_fds)) {
         sdk_log("[sdk][video] Snapshot select timeout/failure\n");
-        HI_MPI_VENC_StopRecvPic(snapChn);
+        HI_MPI_VENC_StopRecvFrame(snapChn);
         sdk_video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn);
         fclose(fp);
@@ -1552,10 +1552,10 @@ int local_sdk_video_get_jpeg(int chn, char *file) {
     }
 
     memset(&stStat, 0, sizeof(stStat));
-    result = HI_MPI_VENC_Query(snapChn, &stStat);
+    result = HI_MPI_VENC_QueryStatus(snapChn, &stStat);
     if (result != HI_SUCCESS || stStat.u32CurPacks == 0) {
         sdk_log("[sdk][video] Snapshot query failed or empty: 0x%x\n", result);
-        HI_MPI_VENC_StopRecvPic(snapChn);
+        HI_MPI_VENC_StopRecvFrame(snapChn);
         sdk_video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn);
         fclose(fp);
@@ -1565,7 +1565,7 @@ int local_sdk_video_get_jpeg(int chn, char *file) {
     memset(&stStream, 0, sizeof(stStream));
     stStream.pstPack = (VENC_PACK_S *)malloc(sizeof(VENC_PACK_S) * stStat.u32CurPacks);
     if (!stStream.pstPack) {
-        HI_MPI_VENC_StopRecvPic(snapChn);
+        HI_MPI_VENC_StopRecvFrame(snapChn);
         sdk_video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn);
         fclose(fp);
@@ -1577,7 +1577,7 @@ int local_sdk_video_get_jpeg(int chn, char *file) {
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] HI_MPI_VENC_GetStream snapshot failed: 0x%x\n", result);
         free(stStream.pstPack);
-        HI_MPI_VENC_StopRecvPic(snapChn);
+        HI_MPI_VENC_StopRecvFrame(snapChn);
         sdk_video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn);
         fclose(fp);
@@ -1590,7 +1590,7 @@ int local_sdk_video_get_jpeg(int chn, char *file) {
 
     HI_MPI_VENC_ReleaseStream(snapChn, &stStream);
     free(stStream.pstPack);
-    HI_MPI_VENC_StopRecvPic(snapChn);
+    HI_MPI_VENC_StopRecvFrame(snapChn);
     sdk_video_unbind_vpss_venc(chn, snapChn);
     HI_MPI_VENC_DestroyChn(snapChn);
     fclose(fp);

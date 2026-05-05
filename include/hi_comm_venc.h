@@ -328,6 +328,8 @@ typedef struct hiVENC_CHN_STAT_S
     HI_U32 u32LeftEncPics;                          /*Number of frames to be encoded. This member is valid after HI_MPI_VENC_StartRecvPicEx is called.*/
 }VENC_CHN_STAT_S;
 
+typedef VENC_CHN_STAT_S VENC_CHN_STATUS_S;
+
 
 
 typedef struct hiVENC_PARAM_H264_SLICE_SPLIT_S

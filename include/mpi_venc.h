@@ -32,11 +32,10 @@ HI_S32 HI_MPI_VENC_SetChnlPriority(VENC_CHN VeChn, HI_U32 u32Priority);
 HI_S32 HI_MPI_VENC_GetChnlPriority(VENC_CHN VeChn, HI_U32 *pu32Priority);
 HI_S32 HI_MPI_VENC_ResetChn(VENC_CHN VeChn);
 
-HI_S32 HI_MPI_VENC_StartRecvPic(VENC_CHN VeChn);
-HI_S32 HI_MPI_VENC_StartRecvPicEx(VENC_CHN VeChn, VENC_RECV_PIC_PARAM_S *pstRecvParam);
-HI_S32 HI_MPI_VENC_StopRecvPic(VENC_CHN VeChn);
+HI_S32 HI_MPI_VENC_StartRecvFrame(VENC_CHN VeChn, const VENC_RECV_PIC_PARAM_S *pstRecvParam);
+HI_S32 HI_MPI_VENC_StopRecvFrame(VENC_CHN VeChn);
 
-HI_S32 HI_MPI_VENC_Query(VENC_CHN VeChn, VENC_CHN_STAT_S *pstStat);
+HI_S32 HI_MPI_VENC_QueryStatus(VENC_CHN VeChn, VENC_CHN_STATUS_S *pstStatus);
 
 HI_S32 HI_MPI_VENC_SetChnAttr(VENC_CHN VeChn, const VENC_CHN_ATTR_S *pstAttr);
 HI_S32 HI_MPI_VENC_GetChnAttr(VENC_CHN VeChn, VENC_CHN_ATTR_S *pstAttr);
