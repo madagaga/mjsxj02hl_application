@@ -62,7 +62,7 @@ bool video_init() {
                     .resolution  = LOCALSDK_VIDEO_RESOLUTION_1920x1080,
                     .flip        = APP_CFG.video.flip,
                     .mirror      = APP_CFG.video.mirror,
-                    .unknown_5   = 0, // FIXME: what is it?
+                    .channel_type = 0, // Primary channel (1920x1080)
                     .video       = true,
                     .osd         = osd_is_enabled(),
                     .payload     = APP_CFG.video.primary_type,
@@ -71,7 +71,7 @@ bool video_init() {
                     .screen_size = primary_picture_size.width * primary_picture_size.height,
                     .frame_size  = LOCALSDK_VIDEO_PRIMARY_FRAMESIZE,
                     .jpeg        = false,
-                    .unknown_14  = 0, // FIXME: what is it?
+                    .reserved    = 0, // Reserved/padding
                 };
                 if(result &= (local_sdk_video_create(LOCALSDK_VIDEO_PRIMARY_CHANNEL, &primary_options) == LOCALSDK_OK)) {
                     LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_video_create(LOCALSDK_VIDEO_PRIMARY_CHANNEL)");
@@ -98,7 +98,7 @@ bool video_init() {
                                                     .resolution  = LOCALSDK_VIDEO_RESOLUTION_640x360,
                                                     .flip        = APP_CFG.video.flip,
                                                     .mirror      = APP_CFG.video.mirror,
-                                                    .unknown_5   = 1, // FIXME: what is it?
+                                                    .channel_type = 1, // Secondary channel (640x360)
                                                     .video       = true,
                                                     .osd         = false, // Not work for secondary channel
                                                     .payload     = APP_CFG.video.secondary_type,
@@ -107,7 +107,7 @@ bool video_init() {
                                                     .screen_size = secondary_picture_size.width * secondary_picture_size.height,
                                                     .frame_size  = LOCALSDK_VIDEO_SECONDARY_FRAMESIZE,
                                                     .jpeg        = true,
-                                                    .unknown_14  = 1, // FIXME: what is it?
+                                                    .reserved    = 1, // Reserved/padding
                                                 };
                                                 if(result &= (local_sdk_video_create(LOCALSDK_VIDEO_SECONDARY_CHANNEL, &secondary_options) == LOCALSDK_OK)) {
                                                     LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_video_create(LOCALSDK_VIDEO_SECONDARY_CHANNEL)");

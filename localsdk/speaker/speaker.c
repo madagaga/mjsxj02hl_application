@@ -23,14 +23,14 @@ bool speaker_init() {
         LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_speaker_init()");
         
         LOCALSDK_SPEAKER_OPTIONS speaker_options = {
-            .sample_rate = LOCALSDK_SPEAKER_SAMPLE_RATE,
-            .bit_depth   = LOCALSDK_SPEAKER_BIT_DEPTH,
-            .unknown_2   = 25, // FIXME: what is it?
-            .track_type  = LOCALSDK_SPEAKER_TRACK_TYPE,
-            .unknown_4   = 30, // FIXME: what is it?
-            .volume      = APP_CFG.speaker.volume,
-            .buffer_size = LOCALSDK_AUDIO_PCM_BUFFER_SIZE,
-            .unknown_7   = 1, // FIXME: what is it?
+            .sample_rate      = LOCALSDK_SPEAKER_SAMPLE_RATE,
+            .bit_depth        = LOCALSDK_SPEAKER_BIT_DEPTH,
+            .points_per_frame = 25, // AENC_CHN_ATTR_S.u32PtNumPerFrm
+            .track_type      = LOCALSDK_SPEAKER_TRACK_TYPE,
+            .buffer_size      = 30, // AENC_CHN_ATTR_S.u32BufSize
+            .volume          = APP_CFG.speaker.volume,
+            .pcm_buffer_size = LOCALSDK_AUDIO_PCM_BUFFER_SIZE,
+            .reserved         = 1,  // Reserved/padding,
         };
         
         if(result &= (local_sdk_speaker_set_parameters(&speaker_options) == LOCALSDK_OK)) {

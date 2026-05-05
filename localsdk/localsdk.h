@@ -27,7 +27,8 @@ typedef struct {
 int localsdk_set_logprintf_func(int (*function)(const char *, ...));
 
 // Set shell function
-int localsdk_set_shellcall_func(int *param_1); // FIXME
+// param: pointer to callback function: int (*callback)(const char *command)
+int localsdk_set_shellcall_func(int (*callback)(const char *));
 
 // Initialize SDK
 int localsdk_init();
@@ -74,9 +75,9 @@ typedef struct {
     uint32_t size;
     uint32_t index;
     uint32_t timestamp;
-    uint16_t unknown_4; // FIXME: what is it?
-    uint16_t unknown_5; // FIXME: what is it?
-    uint16_t type;
+    uint16_t offset;      // Offset in buffer (from VENC_PACK_S.u32Offset)
+    uint16_t frame_end;   // Frame end flag (from VENC_PACK_S.bFrameEnd)
+    uint16_t type;        // Frame type (H264E_NALU_*, H265E_NALU_*)
 } LOCALSDK_H26X_FRAME_INFO;
 
 typedef struct {
@@ -85,7 +86,7 @@ typedef struct {
     uint32_t resolution;
     uint32_t flip;
     uint32_t mirror;
-    uint32_t unknown_5; // FIXME: what is it?
+    uint32_t channel_type;   // Channel type (0=primary 1920x1080, 1=secondary 640x360)
     uint32_t video;
     uint32_t osd;
     uint32_t payload;
@@ -94,7 +95,7 @@ typedef struct {
     uint32_t screen_size;
     uint32_t frame_size;
     uint32_t jpeg;
-    uint32_t unknown_14; // FIXME: what is it?
+    uint32_t reserved;      // Reserved/padding
 } LOCALSDK_VIDEO_OPTIONS;
 
 // Init video
@@ -108,7 +109,8 @@ int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options);
 
 // Set video frame callback
 int local_sdk_video_set_encode_frame_callback(int chn, int (*callback)(LOCALSDK_H26X_FRAME_INFO *frameInfo));
-int local_sdk_video_set_yuv_frame_callback(int chn, int (*callback)(LOCALSDK_H26X_FRAME_INFO *frameInfo)); // FIXME: Need own structure?
+// Set YUV frame callback (same structure as encoded for now)
+int local_sdk_video_set_yuv_frame_callback(int chn, int (*callback)(LOCALSDK_H26X_FRAME_INFO *frameInfo));
 
 // Set video algo module callback
 int local_sdk_video_set_algo_module_register_callback(int (*callback)());
@@ -157,19 +159,19 @@ typedef struct {
 } LOCALSDK_AUDIO_G711_FRAME_INFO;
 
 typedef struct {
-    uint32_t sample_rate;
-    uint32_t bit_depth;
-    uint32_t unknown_2; // FIXME: what is it?
-    uint32_t track_type;
-    uint32_t unknown_4; // FIXME: what is it?
-    uint32_t unknown_5; // FIXME: what is it?
-    uint32_t unknown_6; // FIXME: what is it?
-    uint32_t unknown_7; // FIXME: what is it?
-    uint32_t unknown_8; // FIXME: what is it?
-    uint32_t unknown_9; // FIXME: what is it?
-    uint32_t volume;
-    uint32_t pcm_buffer_size;
-    uint32_t g711_buffer_size;
+    uint32_t sample_rate;      // 8000 Hz
+    uint32_t bit_depth;        // 16 bits
+    uint32_t points_per_frame; // AENC_CHN_ATTR_S.u32PtNumPerFrm (25)
+    uint32_t track_type;       // 0=mono, 1=stereo
+    uint32_t buffer_size;      // AENC_CHN_ATTR_S.u32BufSize (0 for audio, 30 for speaker)
+    uint32_t payload_type;     // AENC_CHN_ATTR_S.enType (2=PT_G711A)
+    uint32_t encoder_param;    // AENC_CHN_ATTR_S.pValue pointer/flag (1)
+    uint32_t reserved_1;       // Reserved/padding (1)
+    uint32_t reserved_2;       // Reserved/padding (2)
+    uint32_t initial_gain;     // Initial gain value (20)
+    uint32_t volume;           // Volume level
+    uint32_t pcm_buffer_size;  // PCM buffer size (640)
+    uint32_t g711_buffer_size; // G711 buffer size (320)
 } LOCALSDK_AUDIO_OPTIONS;
 
 // Init audio
@@ -217,14 +219,14 @@ int local_sdk_audio_destory();
 #define LOCALSDK_SPEAKER_G711_TYPE   2
 
 typedef struct {
-    uint32_t sample_rate;
-    uint32_t bit_depth;
-    uint32_t unknown_2; // FIXME: what is it?
-    uint32_t track_type;
-    uint32_t unknown_4; // FIXME: what is it?
-    uint32_t volume;
-    uint32_t buffer_size;
-    uint32_t unknown_7; // FIXME: what is it?
+    uint32_t sample_rate;      // 8000 Hz
+    uint32_t bit_depth;        // 16 bits
+    uint32_t points_per_frame; // AENC_CHN_ATTR_S.u32PtNumPerFrm (25)
+    uint32_t track_type;       // 0=mono, 1=stereo
+    uint32_t buffer_size;      // AENC_CHN_ATTR_S.u32BufSize (30)
+    uint32_t volume;           // Volume level
+    uint32_t pcm_buffer_size;  // PCM buffer size (640)
+    uint32_t reserved;         // Reserved/padding (1)
 } LOCALSDK_SPEAKER_OPTIONS;
 
 // Init speaker
@@ -276,7 +278,7 @@ typedef struct {
         uint32_t width;
         uint32_t y;
         uint32_t height;
-        uint32_t unknown[11]; // FIXME: what is it?
+        uint32_t reserved[11]; // Replaces unknown[11]
     } objects[LOCALSDK_ALARM_MAXIMUM_OBJECTS];
 } LOCALSDK_ALARM_EVENT_INFO;
 
@@ -318,7 +320,7 @@ int local_sdk_set_alarm_switch(int type, bool state);
 #define LOCALSDK_OSD_COLOR_ORANGE 5
 
 typedef struct {
-    uint32_t unknown; // FIXME: what is it?
+    uint32_t flags;           // Replaces unknown (value 67 from original binary)
     uint32_t datetime_x;
     uint32_t datetime_y;
     uint32_t datetime_reduce;
@@ -336,7 +338,7 @@ typedef struct {
         uint32_t width;
         uint32_t y;
         uint32_t height;
-        uint32_t unknown; // FIXME: what is it (always = 1)?
+        uint32_t visible;        // Replaces unknown (always = 1)
         uint32_t color;
     } objects[LOCALSDK_ALARM_MAXIMUM_OBJECTS];
 } LOCALSDK_OSD_RECTANGLES;
@@ -350,7 +352,7 @@ int local_sdk_video_osd_update_logo(int chn, bool state);
 // Display date and time
 int local_sdk_video_osd_update_timestamp(int chn, bool state, struct tm *timestamp);
 
-// Display rectangles 
+// Display rectangles
 int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECTANGLES *rectangles);
 
 /********************

@@ -21,7 +21,7 @@ static void *osd_datetime_timer(void *args) {
         sleep(1);
         pthread_testcancel();
     }
-    
+
     if(local_sdk_video_osd_update_timestamp(LOCALSDK_VIDEO_PRIMARY_CHANNEL, false, NULL) != LOCALSDK_OK) {
         LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "local_sdk_video_osd_update_timestamp(false)");
     }
@@ -36,11 +36,11 @@ bool osd_is_enabled() {
 bool osd_init() {
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
     bool result = true;
-    
+
     if(osd_is_enabled()) {
         // Init primary channel (not work for secondary channel)
         LOCALSDK_OSD_OPTIONS osd_primary_options = {
-            .unknown = 67, // FIXME: what is it?
+            .flags      = 67, // Value from original binary
             .datetime_x = APP_CFG.osd.datetime_x,
             .datetime_y = APP_CFG.osd.datetime_y,
             .datetime_reduce = ((APP_CFG.osd.datetime_size < 0) ? abs(APP_CFG.osd.datetime_size)+1 : 1),
@@ -52,14 +52,14 @@ bool osd_init() {
         };
         if(result &= (local_sdk_video_osd_set_parameters(LOCALSDK_VIDEO_PRIMARY_CHANNEL, &osd_primary_options) == LOCALSDK_OK)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_video_osd_set_parameters()");
         else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_video_osd_set_parameters()");
-        
+
         // Free OSD if error occurred
         if(!result) {
             if(osd_free()) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "osd_free()");
             else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "osd_free()");
         }
     } else LOGGER(LOGGER_LEVEL_INFO, "OSD is disabled in the settings.");
-    
+
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed (result = %s).", (result ? "true" : "false"));
     return result;
 }
@@ -68,23 +68,23 @@ bool osd_init() {
 bool osd_postinit() {
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
     bool result = true;
-    
+
     if(osd_is_enabled()) {
         // Display OEM logo (MI)
         if(APP_CFG.osd.oemlogo) {
             if(result &= (local_sdk_video_osd_update_logo(LOCALSDK_VIDEO_PRIMARY_CHANNEL, true) == LOCALSDK_OK)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_video_osd_update_logo(true)");
             else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_video_osd_update_logo(true)");
         }
-        
+
         // Display date and time
         if(APP_CFG.osd.datetime) {
             if(result &= (pthread_create(&datetime_thread, NULL, osd_datetime_timer, NULL) == 0)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "pthread_create(datetime_thread)");
             else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "pthread_create(datetime_thread)");
         }
-        
+
         // For rectangles see osd_rectangles_callback()
     }
-    
+
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed (result = %s).", (result ? "true" : "false"));
     return result;
 }
@@ -93,7 +93,7 @@ bool osd_postinit() {
 bool osd_free() {
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
     bool result = true;
-    
+
     if(osd_is_enabled()) {
         // OEM logo
         if(APP_CFG.osd.oemlogo) {
@@ -119,7 +119,7 @@ bool osd_free() {
             else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "local_sdk_video_osd_update_rect_multi(false)");
         }
     }
-    
+
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed (result = %s).", (result ? "true" : "false"));
     return result;
 }

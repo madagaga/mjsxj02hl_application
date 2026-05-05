@@ -1412,6 +1412,8 @@ static void *sdk_video_run_thread(void *arg) {
                 fi.data      = (signed char *)stStream.pstPack[i].pu8Addr;
                 fi.size      = stStream.pstPack[i].u32Len;
                 fi.timestamp = stStream.pstPack[i].u64PTS;
+                fi.offset    = (uint16_t)stStream.pstPack[i].u32Offset; // From VENC_PACK_S.u32Offset
+                fi.frame_end = (uint16_t)stStream.pstPack[i].bFrameEnd; // From VENC_PACK_S.bFrameEnd
                 fi.type      = stStream.pstPack[i].DataType.enH264EType;
                 g_encCb[chn](&fi);
             }

@@ -56,14 +56,14 @@ bool audio_init() {
             LOCALSDK_AUDIO_OPTIONS audio_options = {
                 .sample_rate      = LOCALSDK_AUDIO_SAMPLE_RATE,
                 .bit_depth        = LOCALSDK_AUDIO_BIT_DEPTH,
-                .unknown_2        = 25, // FIXME: what is it?
+                .points_per_frame = 25, // AENC_CHN_ATTR_S.u32PtNumPerFrm,
                 .track_type       = LOCALSDK_AUDIO_TRACK_TYPE,
-                .unknown_4        = 0, // FIXME: what is it?
-                .unknown_5        = 2, // FIXME: what is it?
-                .unknown_6        = 1, // FIXME: what is it?
-                .unknown_7        = 1, // FIXME: what is it?
-                .unknown_8        = 2, // FIXME: what is it?
-                .unknown_9        = 20, // FIXME: what is it?
+                .buffer_size      = 0,  // AENC_CHN_ATTR_S.u32BufSize (0 = default),
+                .payload_type     = LOCALSDK_AUDIO_G711_FRAME, // AENC_CHN_ATTR_S.enType (2=PT_G711A),
+                .encoder_param    = 1,  // AENC_CHN_ATTR_S.pValue,
+                .reserved_1       = 1,  // Reserved/padding,
+                .reserved_2       = 2,  // Reserved/padding,
+                .initial_gain     = 20, // Initial gain value,
                 .volume           = APP_CFG.audio.volume,
                 .pcm_buffer_size  = LOCALSDK_AUDIO_PCM_BUFFER_SIZE,
                 .g711_buffer_size = LOCALSDK_AUDIO_G711_BUFFER_SIZE,
