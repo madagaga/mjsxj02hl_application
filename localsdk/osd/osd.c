@@ -141,7 +141,7 @@ int osd_rectangles_callback(LOCALSDK_ALARM_EVENT_INFO *eventInfo) {
                         rectangles.objects[rectangles.count-1].y = eventInfo->objects[i].y;
                         rectangles.objects[rectangles.count-1].width = eventInfo->objects[i].width;
                         rectangles.objects[rectangles.count-1].height = eventInfo->objects[i].height;
-                        rectangles.objects[rectangles.count-1].unknown = 1;
+                        rectangles.objects[rectangles.count-1].visible = 1;
                         if(eventInfo->objects[i].type == LOCALSDK_ALARM_TYPE_HUMANOID) {
                             rectangles.objects[rectangles.count-1].color = LOCALSDK_OSD_COLOR_ORANGE;
                         } else {

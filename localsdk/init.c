@@ -111,7 +111,7 @@ bool all_init() {
     
     if(result &= (localsdk_set_logprintf_func(logprintf) == LOCALSDK_OK)) {
         LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "localsdk_set_logprintf_func()");
-        if(result &= (localsdk_set_shellcall_func((int *)shellcall_func) == LOCALSDK_OK)) {
+        if(result &= (localsdk_set_shellcall_func(shellcall_func) == LOCALSDK_OK)) {
             LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "localsdk_set_shellcall_func()");
             if(result &= (localsdk_init() == LOCALSDK_OK)) {
                 LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "localsdk_init()");
