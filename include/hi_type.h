@@ -119,6 +119,20 @@ typedef enum {
 #define HI_FAILURE  (-1)
 
 
+/* Lowercase type aliases — used by newer SDK headers (hi_ivp.h, hi_audio_bcd.h, etc.) */
+typedef HI_S8    hi_s8;
+typedef HI_S16   hi_s16;
+typedef HI_S32   hi_s32;
+typedef HI_S64   hi_s64;
+typedef HI_U8    hi_u8;
+typedef HI_U16   hi_u16;
+typedef HI_U32   hi_u32;
+typedef HI_U64   hi_u64;
+typedef HI_FLOAT hi_float;
+typedef HI_BOOL  hi_bool;
+typedef void     hi_void;
+typedef char     hi_char;
+
 #ifdef __cplusplus
 #if __cplusplus
 }
