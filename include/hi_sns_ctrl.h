@@ -8,6 +8,7 @@
 #define __HI_SNS_CTRL_H__
 
 #include "hi_type.h"
+#include "hi_comm_isp.h"
 #include "hi_comm_3a.h"
 
 #ifdef __cplusplus
