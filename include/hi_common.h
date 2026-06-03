@@ -107,6 +107,7 @@ typedef HI_S32 AVENC_CHN;
 typedef HI_S32 VI_DEV;
 typedef HI_S32 VI_WAY;
 typedef HI_S32 VI_CHN;
+typedef HI_S32 VI_PIPE;
 typedef HI_S32 VO_DEV;
 typedef HI_S32 VO_LAYER;
 typedef HI_S32 VO_CHN;

@@ -55,9 +55,10 @@
 #include "mpi_adec.h"
 #include "hi_ivp.h"
 
-/* Provided by libsns_f22 at link time */
-extern int sensor_register_callback(void);
-extern int sensor_unregister_callback(void);
+#include "hi_sns_ctrl.h"
+
+/* HI_MPI_VB_SetConfig is the renamed SetConf in this SDK version */
+extern HI_S32 HI_MPI_VB_SetConfig(const VB_CONF_S *pstVbConf);
 
 /* Forward declarations for internal video functions */
 static void sdk_video_shutdown_channel(int chn);
@@ -537,8 +538,11 @@ int localsdk_destory() {
         g_ispThread = 0;
     }
 
-    if (sensor_unregister_callback() != 0) {
-        sdk_log("[sdk][video] sensor_unregister_callback failed\n");
+    if (stSnsSoiSensorObj.pfnUnRegisterCallback) {
+        ALG_LIB_S stAeLib = {0}, stAwbLib = {0};
+        strncpy(stAeLib.acLibName,  HI_AE_LIB_NAME,  sizeof(stAeLib.acLibName)  - 1);
+        strncpy(stAwbLib.acLibName, HI_AWB_LIB_NAME, sizeof(stAwbLib.acLibName) - 1);
+        stSnsSoiSensorObj.pfnUnRegisterCallback(0, &stAeLib, &stAwbLib);
     }
     
     /* Cleanup locks */
@@ -974,12 +978,25 @@ static void *sdk_isp_thread(void *arg) {
 }
 
 static int sdk_video_sensor_register_f22(void) {
-    int32_t result = sensor_register_callback();
-    if (result != 0) {
-        sdk_log("[sdk][video] sensor_register_callback failed: 0x%x\n", result);
+    ALG_LIB_S stAeLib, stAwbLib;
+
+    memset(&stAeLib,  0, sizeof(stAeLib));
+    memset(&stAwbLib, 0, sizeof(stAwbLib));
+    stAeLib.s32Id  = 0;
+    stAwbLib.s32Id = 0;
+    strncpy(stAeLib.acLibName,  HI_AE_LIB_NAME,  sizeof(stAeLib.acLibName)  - 1);
+    strncpy(stAwbLib.acLibName, HI_AWB_LIB_NAME, sizeof(stAwbLib.acLibName) - 1);
+
+    if (!stSnsSoiSensorObj.pfnRegisterCallback) {
+        sdk_log("[sdk][video] stSnsSoiSensorObj.pfnRegisterCallback is NULL\n");
         return LOCALSDK_ERROR;
     }
 
+    int32_t result = stSnsSoiSensorObj.pfnRegisterCallback(0, &stAeLib, &stAwbLib);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] sensor pfnRegisterCallback failed: 0x%x\n", result);
+        return LOCALSDK_ERROR;
+    }
     return LOCALSDK_OK;
 }
 
@@ -1015,14 +1032,6 @@ static int sdk_video_isp_init_minimal(int fps) {
     result = HI_MPI_ISP_MemInit(0);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] HI_MPI_ISP_MemInit failed: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    memset(&stWdrMode, 0, sizeof(stWdrMode));
-    stWdrMode.enWDRMode = WDR_MODE_NONE;
-    result = HI_MPI_ISP_SetWDRMode(0, &stWdrMode);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] HI_MPI_ISP_SetWDRMode failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
 
@@ -1106,9 +1115,9 @@ int local_sdk_video_init(int fps) {
     HI_MPI_SYS_Exit();
     HI_MPI_VB_Exit();
 
-    result = HI_MPI_VB_SetConf(&stVbConf);
+    result = HI_MPI_VB_SetConfig(&stVbConf);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] HI_MPI_VB_SetConf failed: 0x%x\n", result);
+        sdk_log("[sdk][video] HI_MPI_VB_SetConfig failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
     result = HI_MPI_VB_Init();
@@ -1117,13 +1126,6 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
-    memset(&stSysConf, 0, sizeof(stSysConf));
-    stSysConf.u32AlignWidth = SDK_SYS_ALIGN_WIDTH;
-    result = HI_MPI_SYS_SetConf(&stSysConf);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] HI_MPI_SYS_SetConf failed: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
     result = HI_MPI_SYS_Init();
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] HI_MPI_SYS_Init failed: 0x%x\n", result);
@@ -1194,24 +1196,9 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     stChnAttr.bMirror = options->mirror ? HI_TRUE : HI_FALSE;
     stChnAttr.bFlip   = options->flip   ? HI_TRUE : HI_FALSE;
 
-    /* Channel mode (size + format) */
-    memset(&stChnMode, 0, sizeof(VPSS_CHN_MODE_S));
-    stChnMode.enChnMode      = VPSS_CHN_MODE_USER;
-    stChnMode.bDouble        = HI_FALSE;
-    stChnMode.enPixelFormat  = PIXEL_FORMAT_YUV_SEMIPLANAR_420;
-    stChnMode.enCompressMode = COMPRESS_MODE_NONE;
-    stChnMode.u32Width  = (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) ? 1920 : 640;
-    stChnMode.u32Height = (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) ? 1080 : 360;
-
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] Failed to set channel attr: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    result = HI_MPI_VPSS_SetChnMode(g_vpssGrp, g_vpssChn[chn], &stChnMode);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] Failed to set channel mode: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
 
@@ -1260,17 +1247,6 @@ int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         return LOCALSDK_ERROR;
     }
 
-    /* Update channel mode for resolution change */
-    result = HI_MPI_VPSS_GetChnMode(g_vpssGrp, g_vpssChn[chn], &stChnMode);
-    if (result == HI_SUCCESS) {
-        if (options->resolution == LOCALSDK_VIDEO_RESOLUTION_1920x1080) {
-            stChnMode.u32Width = 1920; stChnMode.u32Height = 1080;
-        } else if (options->resolution == LOCALSDK_VIDEO_RESOLUTION_640x360) {
-            stChnMode.u32Width = 640; stChnMode.u32Height = 360;
-        }
-        HI_MPI_VPSS_SetChnMode(g_vpssGrp, g_vpssChn[chn], &stChnMode);
-    }
-    
     /* Update video parameters */
     memcpy(&g_videoParams[chn * 32], options, sizeof(LOCALSDK_VIDEO_OPTIONS));
 

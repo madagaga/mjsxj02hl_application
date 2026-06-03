@@ -428,7 +428,7 @@ typedef struct hiISP_UVNR_MANUAL_ATTR_S
 {
     HI_U8 u8ColorCast;   		/* RW,  Range:[0, 3]. equal to coring limit in fw */ 
     HI_U8 u8UvnrThreshold;   /* RW,  Range:[0, 64]. */   
-    HI_U8 u8UvnrStrength; 	/* RW,  Range:[0, 34]. */ //0: Med & UVNR all close; 1: Med open, UVNR close; 2---34¡êoMed Close, UNVR open;
+    HI_U8 u8UvnrStrength; 	/* RW,  Range:[0, 34]. */ //0: Med & UVNR all close; 1: Med open, UVNR close; 2---34ï¿½ï¿½oMed Close, UNVR open;
 } ISP_UVNR_MANUAL_ATTR_S;
 
 typedef struct hiISP_UVNR_AUTO_ATTR_S
@@ -1429,6 +1429,31 @@ typedef struct hiISP_FOCUS_ATTR_S
 
 
 #ifdef __cplusplus
+/* Sensor init attributes (from 3516e SDK â€” compatible with 3518ev300) */
+typedef struct hiISP_INIT_ATTR_S {
+    HI_U32 u32ExpTime;
+    HI_U32 u32AGain;
+    HI_U32 u32DGain;
+    HI_U32 u32ISPDGain;
+    HI_U32 u32Exposure;
+    HI_U32 u32LinesPer500ms;
+    HI_U32 u32PirisFNO;
+    HI_U16 u16WBRgain;
+    HI_U16 u16WBGgain;
+    HI_U16 u16WBBgain;
+    HI_U16 u16SampleRgain;
+    HI_U16 u16SampleBgain;
+} ISP_INIT_ATTR_S;
+
+/* Sensor communication bus union */
+typedef union hiISP_SNS_COMMBUS_U {
+    HI_S8 s8I2cDev;
+    struct {
+        HI_S8 bit4SspDev : 4;
+        HI_S8 bit4SspCs  : 4;
+    } s8SspDev;
+} ISP_SNS_COMMBUS_U;
+
 #if __cplusplus
 }
 #endif
