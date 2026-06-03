@@ -60,6 +60,18 @@
 /* HI_MPI_VB_SetConfig is the renamed SetConf in this SDK version */
 extern HI_S32 HI_MPI_VB_SetConfig(const VB_CONF_S *pstVbConf);
 
+/* sceneauto library */
+extern int sceneauto_cut_night_mode(int mode);
+extern int sceneauto_resume(void);
+extern int sceneauto_pause(void);
+extern int sceneauto_init(void);
+
+/* sceneauto library — handles ISP scene switching and auto night mode */
+extern int sceneauto_cut_night_mode(int mode);
+extern int sceneauto_resume(void);
+extern int sceneauto_pause(void);
+extern int sceneauto_init(void);
+
 /* Forward declarations for internal video functions */
 static void sdk_video_shutdown_channel(int chn);
 static int sdk_video_unbind_vi_vpss(void);
@@ -2600,33 +2612,20 @@ int local_sdk_setup_keydown_set_callback(int timeout, int (*callback)()) {
  * @brief Set daytime mode (color image) via ISP
  */
 int local_sdk_video_set_daytime_mode() {
-    ISP_SATURATION_ATTR_S stSatAttr;
-    if (HI_MPI_ISP_GetSaturationAttr(0, &stSatAttr) == HI_SUCCESS) {
-        stSatAttr.enOpType = OP_TYPE_AUTO;
-        HI_MPI_ISP_SetSaturationAttr(0, &stSatAttr);
-    }
+    int result = sceneauto_cut_night_mode(0);
+    sdk_log("[sdk][local_sdk_video_set_daytime_mode] sceneauto cut day mode [ret:%d]\n", result);
     return LOCALSDK_OK;
 }
 
-/**
- * @brief Set night mode (grayscale image) via ISP
- */
 int local_sdk_video_set_night_mode() {
-    ISP_SATURATION_ATTR_S stSatAttr;
-    if (HI_MPI_ISP_GetSaturationAttr(0, &stSatAttr) == HI_SUCCESS) {
-        stSatAttr.enOpType = OP_TYPE_MANUAL;
-        stSatAttr.stManual.u8Saturation = 0; /* grayscale */
-        HI_MPI_ISP_SetSaturationAttr(0, &stSatAttr);
-    }
+    int result = sceneauto_cut_night_mode(1);
+    usleep(120000);
+    sdk_log("[sdk][local_sdk_video_set_night_mode] sceneauto cut night mode [ret:%d]\n", result);
     return LOCALSDK_OK;
 }
 
-/**
- * @brief Enable automatic night mode (photo-sensitive sensor drives sceneauto)
- */
 int local_sdk_auto_night_light() {
-    /* sceneauto library handles auto switching via photo sensor callback */
-    return LOCALSDK_OK;
+    return sceneauto_resume();
 }
 
 /**
