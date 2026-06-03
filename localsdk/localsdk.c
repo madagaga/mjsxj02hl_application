@@ -53,8 +53,9 @@
 #include "mpi_ao.h"
 #include "mpi_aenc.h"
 #include "mpi_adec.h"
+#include "hi_ivp.h"
 
-/* Sensor library entry points from libsns_f22 / libsns_jxf22 */
+/* Provided by libsns_f22 at link time */
 extern int sensor_register_callback(void);
 extern int sensor_unregister_callback(void);
 
@@ -2760,11 +2761,11 @@ int inner_change_resulu_type(int resolution, int *result) {
    ============================================================================ */
 
 /* Global IVP state */
-static void* g_ivpResourceHandle = NULL;
+static hi_s32   g_ivpHandle = -1;
 static uint32_t g_ivpResourceSize = 0;
-static uint8_t* g_ivpResourceBuffer = NULL;
-static HI_U32 g_ivpPhysAddr = 0;
-static int32_t g_ivpInitialized = 0;
+static HI_VOID *g_ivpResourceBuffer = NULL;
+static HI_U32   g_ivpPhysAddr = 0;
+static int32_t  g_ivpInitialized = 0;
 
 /**
  * @brief Get file size for OMS model loading
@@ -2862,7 +2863,7 @@ int32_t sample_ivp_load_resource(const char *oms_file, int32_t chn) {
         sdk_log("[sdk][ivp] Failed to allocate MMZ memory: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
     sdk_log("[sdk][ivp] MMZ allocated - Physical: 0x%x, Virtual: %p, Size: %u\n",
             phys_addr, virt_addr, file_size);
 
@@ -2874,20 +2875,26 @@ int32_t sample_ivp_load_resource(const char *oms_file, int32_t chn) {
         return LOCALSDK_ERROR;
     }
 
-    /* Load resource from memory into IVP */
-    result = hi_ivp_load_resource_from_memory(virt_addr, file_size);
+    /* Load resource via hi_ivp_mem_info struct */
+    {
+        hi_ivp_mem_info mem_info;
+        memset(&mem_info, 0, sizeof(mem_info));
+        mem_info.physical_addr = (hi_u64)phys_addr;
+        mem_info.virtual_addr  = (hi_u64)(uintptr_t)virt_addr;
+        mem_info.memory_size   = file_size;
+
+        result = hi_ivp_load_resource_from_memory(&mem_info, &g_ivpHandle);
+    }
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] Failed to load resource from memory: 0x%x\n", result);
         HI_MPI_SYS_MmzFree(phys_addr, virt_addr);
         return LOCALSDK_ERROR;
     }
 
-    /* Store resource handle for later cleanup */
-    g_ivpResourceHandle = virt_addr;
-    g_ivpResourceSize = file_size;
-    g_ivpResourceBuffer = (uint8_t *)virt_addr;
-    g_ivpPhysAddr = phys_addr;
-    
+    g_ivpResourceSize   = file_size;
+    g_ivpResourceBuffer = virt_addr;
+    g_ivpPhysAddr       = phys_addr;
+
     sdk_log("[sdk][ivp] IVP model loaded successfully\n");
     return LOCALSDK_OK;
 }
@@ -2940,31 +2947,28 @@ int32_t sample_ivp_init(int32_t width, int32_t height, const char *oms_file) {
  */
 int32_t sample_ivp_unload_resource(void) {
     int32_t result;
-    
-    if (!g_ivpResourceHandle) {
+
+    if (g_ivpHandle < 0) {
         sdk_log("[sdk][ivp] No IVP resource to unload\n");
         return LOCALSDK_OK;
     }
-    
+
     sdk_log("[sdk][ivp] Unloading IVP resource\n");
-    
-    /* Unload resource from IVP */
-    result = hi_ivp_unload_resource(g_ivpResourceHandle);
+
+    result = hi_ivp_unload_resource(g_ivpHandle);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] Failed to unload resource: 0x%x\n", result);
     }
-    
-    /* Free MMZ memory */
+
     if (g_ivpResourceBuffer) {
         HI_MPI_SYS_MmzFree(g_ivpPhysAddr, g_ivpResourceBuffer);
         g_ivpPhysAddr = 0;
+        g_ivpResourceBuffer = NULL;
     }
-    
-    /* Clear state */
-    g_ivpResourceHandle = NULL;
-    g_ivpResourceBuffer = NULL;
+
+    g_ivpHandle = -1;
     g_ivpResourceSize = 0;
-    
+
     sdk_log("[sdk][ivp] IVP resource unloaded\n");
     return LOCALSDK_OK;
 }
@@ -3002,20 +3006,20 @@ int32_t sample_ivp_deinit(void) {
  */
 int32_t sample_ivp_set_ctrl_attr(int32_t chn, void *ctrl_attr) {
     int32_t result;
-    
-    if (chn < 0 || !ctrl_attr) {
-        sdk_log("[sdk][ivp] Invalid channel or control attributes\n");
+
+    if (!ctrl_attr) {
+        sdk_log("[sdk][ivp] Invalid control attributes\n");
         return LOCALSDK_ERROR;
     }
-    
+
     sdk_log("[sdk][ivp] Setting control attributes for channel %d\n", chn);
-    
-    result = hi_ivp_set_ctrl_attr(ctrl_attr);
+
+    result = hi_ivp_set_ctrl_attr(g_ivpHandle, (const hi_ivp_ctrl_attr *)ctrl_attr);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] Failed to set control attributes: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
     return LOCALSDK_OK;
 }
 
@@ -3024,20 +3028,20 @@ int32_t sample_ivp_set_ctrl_attr(int32_t chn, void *ctrl_attr) {
  */
 int32_t sample_ivp_set_roi_attr(int32_t chn, void *roi_attr) {
     int32_t result;
-    
-    if (chn < 0 || !roi_attr) {
-        sdk_log("[sdk][ivp] Invalid channel or ROI attributes\n");
+
+    if (!roi_attr) {
+        sdk_log("[sdk][ivp] Invalid ROI attributes\n");
         return LOCALSDK_ERROR;
     }
-    
+
     sdk_log("[sdk][ivp] Setting ROI attributes for channel %d\n", chn);
-    
-    result = hi_ivp_set_roi_attr(roi_attr);
+
+    result = hi_ivp_set_roi_attr(g_ivpHandle, (const hi_ivp_roi_attr *)roi_attr);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] Failed to set ROI attributes: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
     return LOCALSDK_OK;
 }
 
@@ -3046,20 +3050,20 @@ int32_t sample_ivp_set_roi_attr(int32_t chn, void *roi_attr) {
  */
 int32_t sample_ivp_set_roi_map(int32_t chn, void *roi_map) {
     int32_t result;
-    
-    if (chn < 0 || !roi_map) {
-        sdk_log("[sdk][ivp] Invalid channel or ROI map\n");
+
+    if (!roi_map) {
+        sdk_log("[sdk][ivp] Invalid ROI map\n");
         return LOCALSDK_ERROR;
     }
-    
+
     sdk_log("[sdk][ivp] Setting ROI map for channel %d\n", chn);
-    
-    result = hi_ivp_set_roi_map(roi_map);
+
+    result = hi_ivp_set_roi_map(g_ivpHandle, (const hi_ivp_roi_map *)roi_map);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] Failed to set ROI map: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
     return LOCALSDK_OK;
 }
 
@@ -3067,71 +3071,76 @@ int32_t sample_ivp_set_roi_map(int32_t chn, void *roi_map) {
  * @brief Process frame with IVP
  */
 int32_t sample_ivp_process_frame(int32_t chn, void *frame_data, int32_t frame_size) {
+    hi_bool obj_alarm = HI_FALSE;
     int32_t result;
-    
-    if (chn < 0 || !frame_data || frame_size <= 0) {
-        sdk_log("[sdk][ivp] Invalid channel, frame data, or size\n");
+
+    if (!frame_data) {
+        sdk_log("[sdk][ivp] Invalid frame data\n");
         return LOCALSDK_ERROR;
     }
-    
-    /* Process frame with IVP */
-    result = hi_ivp_process_ex(frame_data);
+
+    result = hi_ivp_process(g_ivpHandle, (const VIDEO_FRAME_INFO_S *)frame_data, &obj_alarm);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] Failed to process frame: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
     return LOCALSDK_OK;
 }
 
 /**
  * @brief Advance IVP ISP settings (fine-tuning)
  */
-int32_t sample_ivp_set_advance_isp(int32_t param1, int32_t param2) {
+int32_t sample_ivp_set_advance_isp(int32_t vi_pipe, int32_t enable) {
     int32_t result;
-    
-    sdk_log("[sdk][ivp] Setting advanced ISP parameters: %d, %d\n", param1, param2);
-    
-    result = hi_ivp_set_advance_isp(param1, param2);
+
+    sdk_log("[sdk][ivp] Setting advanced ISP: pipe=%d enable=%d\n", vi_pipe, enable);
+
+    result = hi_ivp_set_advance_isp(g_ivpHandle, vi_pipe, enable ? HI_TRUE : HI_FALSE);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] Failed to set advanced ISP: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
     return LOCALSDK_OK;
 }
 
 /**
  * @brief Set VENC low bitrate mode for IVP optimization
  */
-int32_t sample_ivp_set_venc_low_bitrate(int32_t chn, int32_t bitrate) {
+int32_t sample_ivp_set_venc_low_bitrate(int32_t chn, int32_t enable) {
     int32_t result;
-    
-    sdk_log("[sdk][ivp] Setting low bitrate mode: bitrate=%d kbps\n", bitrate);
-    
-    result = hi_ivp_set_venc_low_bitrate(bitrate);
+
+    sdk_log("[sdk][ivp] Setting low bitrate mode: chn=%d enable=%d\n", chn, enable);
+
+    result = hi_ivp_set_venc_low_bitrate(g_ivpHandle, chn, enable ? HI_TRUE : HI_FALSE);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] Failed to set low bitrate: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
     return LOCALSDK_OK;
 }
 
 /**
  * @brief Set VENC lowlight ISO threshold for night vision
  */
-int32_t sample_ivp_set_venc_lowlight_iso_threshold(int32_t threshold) {
+int32_t sample_ivp_set_venc_lowlight_iso_threshold(int32_t chn, int32_t threshold) {
+    hi_ivp_venc_lowlight_iso_threshold iso_thr;
     int32_t result;
-    
-    sdk_log("[sdk][ivp] Setting lowlight ISO threshold: %d\n", threshold);
-    
-    result = hi_ivp_set_venc_lowlight_iso_threshold(threshold);
+
+    sdk_log("[sdk][ivp] Setting lowlight ISO threshold: chn=%d threshold=%d\n", chn, threshold);
+
+    memset(&iso_thr, 0, sizeof(iso_thr));
+    iso_thr.iso_adaptive_enable = HI_TRUE;
+    iso_thr.iso_threshold[0] = (hi_u32)threshold;
+
+    result = hi_ivp_set_venc_lowlight_iso_threshold(g_ivpHandle, chn, &iso_thr);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] Failed to set lowlight ISO threshold: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
     return LOCALSDK_OK;
 }
 
