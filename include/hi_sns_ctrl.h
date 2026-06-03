@@ -8,13 +8,42 @@
 #define __HI_SNS_CTRL_H__
 
 #include "hi_type.h"
-#include "hi_comm_isp.h"
 #include "hi_comm_3a.h"
 
 #ifdef __cplusplus
 #if __cplusplus
 extern "C" {
 #endif
+#endif
+
+/* These types live in hi_comm_isp.h in newer SDKs — define here if not already declared */
+#ifndef ISP_SNS_COMMBUS_U_DEFINED
+#define ISP_SNS_COMMBUS_U_DEFINED
+typedef union hiISP_SNS_COMMBUS_U {
+    HI_S8 s8I2cDev;
+    struct {
+        HI_S8 bit4SspDev : 4;
+        HI_S8 bit4SspCs  : 4;
+    } s8SspDev;
+} ISP_SNS_COMMBUS_U;
+#endif
+
+#ifndef ISP_INIT_ATTR_S_DEFINED
+#define ISP_INIT_ATTR_S_DEFINED
+typedef struct hiISP_INIT_ATTR_S {
+    HI_U32 u32ExpTime;
+    HI_U32 u32AGain;
+    HI_U32 u32DGain;
+    HI_U32 u32ISPDGain;
+    HI_U32 u32Exposure;
+    HI_U32 u32LinesPer500ms;
+    HI_U32 u32PirisFNO;
+    HI_U16 u16WBRgain;
+    HI_U16 u16WBGgain;
+    HI_U16 u16WBBgain;
+    HI_U16 u16SampleRgain;
+    HI_U16 u16SampleBgain;
+} ISP_INIT_ATTR_S;
 #endif
 
 typedef struct hiISP_SNS_STATE_S {
