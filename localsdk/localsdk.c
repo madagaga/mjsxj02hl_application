@@ -1222,20 +1222,8 @@ int local_sdk_video_init(int fps) {
         sdk_log("[sdk][video] HI_MPI_VPSS_CreateGrp failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    result = HI_MPI_VPSS_StartGrp(g_vpssGrp);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] HI_MPI_VPSS_StartGrp failed: 0x%x\n", result);
-        HI_MPI_VPSS_DestroyGrp(g_vpssGrp);
-        return LOCALSDK_ERROR;
-    }
-
-    result = sdk_video_bind_vi_vpss();
-    if (result != LOCALSDK_OK) {
-        sdk_log("[sdk][video] Failed to bind VI->VPSS\n");
-        HI_MPI_VPSS_StopGrp(g_vpssGrp);
-        HI_MPI_VPSS_DestroyGrp(g_vpssGrp);
-        return LOCALSDK_ERROR;
-    }
+    /* StartGrp and VI→VPSS bind are deferred to local_sdk_video_create() so that
+       SetChnBufWrapAttr can be called before StartGrp, as required by the SDK. */
 
     sdk_log("[sdk][video] Video init complete\n");
     return LOCALSDK_OK;
@@ -1306,7 +1294,26 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     
     /* Store options in global state */
     memcpy(&g_videoParams[chn * 32], options, sizeof(LOCALSDK_VIDEO_OPTIONS));
-    
+
+    /* StartGrp + VI→VPSS bind are deferred until after all channels are configured
+       so that SetChnBufWrapAttr (called above for chn0) runs before StartGrp.
+       chn==1 (secondary) is always the last channel created in video.c. */
+    if (chn == 1) {
+        result = HI_MPI_VPSS_StartGrp(g_vpssGrp);
+        if (result != HI_SUCCESS) {
+            sdk_log("[sdk][video] HI_MPI_VPSS_StartGrp failed: 0x%x\n", result);
+            return LOCALSDK_ERROR;
+        }
+        result = sdk_video_bind_vi_vpss();
+        if (result != LOCALSDK_OK) {
+            sdk_log("[sdk][video] Failed to bind VI->VPSS\n");
+            HI_MPI_VPSS_StopGrp(g_vpssGrp);
+            HI_MPI_VPSS_DestroyGrp(g_vpssGrp);
+            return LOCALSDK_ERROR;
+        }
+        sdk_log("[sdk][video] VPSS started and VI->VPSS bound\n");
+    }
+
     sdk_log("[sdk][video] Channel %d created successfully\n", chn);
     return LOCALSDK_OK;
 }
