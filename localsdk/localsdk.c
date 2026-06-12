@@ -1872,7 +1872,7 @@ int local_sdk_video_set_kbps(int param_1, int param_2) {
 /* Global audio state */
 static AUDIO_DEV g_aiDev = 0;      /* Audio Input Device */
 static AI_CHN g_aiChn = 0;         /* Audio Input Channel */
-static AUDIO_DEV g_aoDev = 1;      /* Audio Output Device */
+static AUDIO_DEV g_aoDev = 0;      /* Audio Output Device (inner codec = dev 0; dev 1 invalid on this SoC) */
 static AO_CHN g_aoChn = 0;         /* Audio Output Channel */
 static AENC_CHN g_aencChn = 0;     /* Audio Encoder Channel */
 static ADEC_CHN g_adecChn = 0;     /* Audio Decoder Channel */
