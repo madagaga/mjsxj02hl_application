@@ -2180,11 +2180,14 @@ int local_sdk_audio_run() {
     /* Enable VQE on AI channel */
     HI_MPI_AI_EnableVqe(g_aiDev, g_aiChn);
 
-    /* Create AENC channel (G.711A) */
+    /* Create AENC channel (G.711A). u32PtNumPerFrm must match the AI's
+       (320 = 40ms @ 8kHz); leaving it 0 makes CreateChn return ILLEGAL_PARAM. */
+    static AENC_ATTR_G711_S stAencG711;
     memset(&stAencAttr, 0, sizeof(stAencAttr));
-    stAencAttr.enType     = PT_G711A;
-    stAencAttr.u32BufSize = 30;
-    stAencAttr.pValue     = NULL;
+    stAencAttr.enType         = PT_G711A;
+    stAencAttr.u32PtNumPerFrm = 320;
+    stAencAttr.u32BufSize     = 30;
+    stAencAttr.pValue         = &stAencG711;
 
     result = HI_MPI_AENC_CreateChn(g_aencChn, &stAencAttr);
     if (result != HI_SUCCESS && result != HI_ERR_AENC_EXIST) {
