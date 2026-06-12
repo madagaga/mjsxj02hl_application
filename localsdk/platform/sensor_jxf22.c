@@ -84,8 +84,9 @@ static const sensor_cfg_t g_sensor_jxf22 = {
 
     .p_sns_obj       = &stSnsSoiSensorObj,
     .sensor_fps      = 20,
-    /* JXF22 VMAX at 1080p30 = 1134 lines; scaled to 20fps: 1134*30/20 = 1701 */
-    .u32FullLinesStd = 1701,
+    /* VMAX at sensor native rate (30fps). Used for VPSS wrap buffer line calculation
+       which requires the sensor input rate to VIPROC, not the output fps. */
+    .u32FullLinesStd = 1134,
 };
 
 const sensor_cfg_t *platform_get_sensor_cfg(void) {

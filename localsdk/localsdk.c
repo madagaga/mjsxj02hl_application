@@ -1126,7 +1126,9 @@ int local_sdk_video_init(int fps) {
         VPSS_VENC_WRAP_PARAM_S stWrap;
         memset(&stWrap, 0, sizeof(stWrap));
         stWrap.bAllOnline       = HI_FALSE; /* VI_ONLINE_VPSS_OFFLINE */
-        stWrap.u32FrameRate     = g_sensor_cfg->sensor_fps;
+        /* SDK doc: u32FrameRate and u32FullLinesStd are the sensor INPUT rate to
+           VIPROC, not the VPSS output rate.  Use native 30fps sensor values. */
+        stWrap.u32FrameRate     = (HI_U32)g_sensor_cfg->isp_pub_attr.f32FrameRate;
         stWrap.u32FullLinesStd  = g_sensor_cfg->u32FullLinesStd;
         stWrap.stLargeStreamSize.u32Width  = g_sensor_cfg->isp_pub_attr.stSnsSize.u32Width;
         stWrap.stLargeStreamSize.u32Height = g_sensor_cfg->isp_pub_attr.stSnsSize.u32Height;
@@ -1150,8 +1152,9 @@ int local_sdk_video_init(int fps) {
     }
 
     /* VB pools (newer SDK layout: 64-bit u64BlkSize).
-       Pool 0: main YUV420 1080p — wrap ring buffer if supported, else full frame.
-       Pool 1: sub  YUV420 640x360. */
+       Pool 0: main YUV420 1080p.  Use wrap buffer size when wrap is supported
+               (~1.2 MB, cnt=1); fall back to full frame (~3.1 MB) otherwise.
+       Pool 1: sub  YUV420 640x360, cnt=5. */
     memset(&stVbConf, 0, sizeof(stVbConf));
     stVbConf.u32MaxPoolCnt = 2;
     stVbConf.astCommPool[0].u64BlkSize = (g_mainWrapBufSize > 0)
