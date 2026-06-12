@@ -1253,10 +1253,13 @@ int local_sdk_video_init(int fps) {
     stGrpAttr.enDynamicRange              = DYNAMIC_RANGE_SDR8;
     stGrpAttr.stFrameRate.s32SrcFrameRate = -1;
     stGrpAttr.stFrameRate.s32DstFrameRate = -1;
-    stGrpAttr.bNrEn                       = HI_TRUE;
-    stGrpAttr.stNrAttr.enNrType           = VPSS_NR_TYPE_VIDEO;
-    stGrpAttr.stNrAttr.enCompressMode     = COMPRESS_MODE_NONE;
-    stGrpAttr.stNrAttr.enNrMotionMode     = NR_MOTION_MODE_NORMAL;
+    /* 3DNR disabled for now: its reference frame ("VPSS(0) Ref", ~3MB at 1080p)
+       was allocated right after the main VB pool, fragmenting the ~19MB MMZ into
+       gaps too small for VENC's contiguous buffers (VENC_CreateChn -> NOMEM
+       despite ~8.5MB free total). Disabling NR frees that block and merges the
+       free space into one ~7.7MB region. Re-enable later together with VENC
+       wrap mode (which shrinks the VB pool, as the original firmware did). */
+    stGrpAttr.bNrEn                       = HI_FALSE;
 
     result = HI_MPI_VPSS_CreateGrp(g_vpssGrp, &stGrpAttr);
     if (result != HI_SUCCESS) {
