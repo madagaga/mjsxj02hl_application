@@ -775,6 +775,12 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn, LOCALSDK_VIDEO_OPTION
         stVencChnAttr.stVencAttr.stAttrJpege.enReceiveMode = VENC_PIC_RECEIVE_SINGLE;
     }
 
+    /* TEMP diagnostic: capture MMZ state right before VENC alloc. */
+    sdk_log("[sdk][video] VENC(%d) attr: type=%d %ux%u bufSize=%u rcmode=%u\n",
+            vencChn, enType, stSize.u32Width, stSize.u32Height,
+            stVencChnAttr.stVencAttr.u32BufSize, options->rcmode);
+    sdk_exec_shell("cat /proc/media-mem > /tmp/mmz_pre_venc.txt 2>&1");
+
     result = HI_MPI_VENC_CreateChn(vencChn, &stVencChnAttr);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] HI_MPI_VENC_CreateChn(%d) failed: 0x%x\n", vencChn, result);
