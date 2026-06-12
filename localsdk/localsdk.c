@@ -2824,16 +2824,19 @@ int inner_change_resulu_type(int resolution, int *result) {
         return LOCALSDK_ERROR;
     }
     
-    /* Map external resolution constants to internal values */
+    /* Validate and pass the resolution through unchanged: downstream
+       (SAMPLE_COMM_SYS_GetPicSize, options.resolution) switches on the same
+       LOCALSDK_VIDEO_RESOLUTION_* constants, so the value must stay consistent.
+       (The old mapping returned 0 for 640x360, which GetPicSize rejected.) */
     switch (resolution) {
         case LOCALSDK_VIDEO_RESOLUTION_640x360:
-            *result = 0;
+            *result = LOCALSDK_VIDEO_RESOLUTION_640x360;
             return LOCALSDK_OK;
-        
+
         case LOCALSDK_VIDEO_RESOLUTION_1920x1080:
-            *result = 6;
+            *result = LOCALSDK_VIDEO_RESOLUTION_1920x1080;
             return LOCALSDK_OK;
-        
+
         default:
             sdk_log("[sdk] change_resulu_type: Unknown resolution %d\n", resolution);
             return LOCALSDK_ERROR;
