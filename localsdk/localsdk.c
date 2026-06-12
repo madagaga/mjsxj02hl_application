@@ -1301,7 +1301,7 @@ int local_sdk_video_init(int fps) {
  */
 int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     VPSS_CHN_ATTR_S stChnAttr;
-    VPSS_CHN_MODE_S stChnMode;
+    SIZE_S stSize;
     int32_t result;
 
     if (chn < 0 || chn > 3 || !options) {
@@ -1309,14 +1309,28 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         return LOCALSDK_ERROR;
     }
 
-    sdk_log("[sdk][video] Creating VPSS channel %d\n", chn);
+    if (sdk_video_resolution_to_size(options->resolution, &stSize) != LOCALSDK_OK) {
+        sdk_log("[sdk][video] Invalid resolution %u for channel %d\n",
+                options->resolution, chn);
+        return LOCALSDK_ERROR;
+    }
 
-    /* Channel attributes (frame rate only) */
+    sdk_log("[sdk][video] Creating VPSS channel %d (%ux%u)\n",
+            chn, stSize.u32Width, stSize.u32Height);
+
+    /* Channel attributes (newer 3516e ABI: explicit size + formats). */
     memset(&stChnAttr, 0, sizeof(VPSS_CHN_ATTR_S));
-    stChnAttr.s32SrcFrameRate = -1;
-    stChnAttr.s32DstFrameRate = -1;
-    stChnAttr.bMirror = options->mirror ? HI_TRUE : HI_FALSE;
-    stChnAttr.bFlip   = options->flip   ? HI_TRUE : HI_FALSE;
+    stChnAttr.enChnMode               = VPSS_CHN_MODE_USER;
+    stChnAttr.u32Width                = stSize.u32Width;
+    stChnAttr.u32Height               = stSize.u32Height;
+    stChnAttr.enVideoFormat           = VIDEO_FORMAT_LINEAR;
+    stChnAttr.enPixelFormat           = PIXEL_FORMAT_YVU_SEMIPLANAR_420;
+    stChnAttr.enDynamicRange          = DYNAMIC_RANGE_SDR8;
+    stChnAttr.enCompressMode          = COMPRESS_MODE_NONE;
+    stChnAttr.stFrameRate.s32SrcFrameRate = -1;
+    stChnAttr.stFrameRate.s32DstFrameRate = -1;
+    stChnAttr.bMirror                 = options->mirror ? HI_TRUE : HI_FALSE;
+    stChnAttr.bFlip                   = options->flip   ? HI_TRUE : HI_FALSE;
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
@@ -1343,7 +1357,6 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
  */
 int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     VPSS_CHN_ATTR_S stChnAttr;
-    VPSS_CHN_MODE_S stChnMode;
     int32_t result;
     int wasStarted;
 
@@ -1896,7 +1909,7 @@ static void sdk_audio_inner_codec_cfg(void) {
     ACODEC_FS_E fs = ACODEC_FS_8000;
     ioctl(fd, ACODEC_SET_I2S1_FS, &fs);
 
-    ACODEC_MIXER_E input_mode = ACODEC_MIXER_IN;
+    ACODEC_MIXER_E input_mode = ACODEC_MIXER_IN1;
     ioctl(fd, ACODEC_SET_MIXER_MIC, &input_mode);
 
     int vol = 60;
@@ -2350,8 +2363,8 @@ int local_sdk_speaker_feed_pcm_data(void *data, int size) {
     stFrame.enBitwidth = AUDIO_BIT_WIDTH_16;
     stFrame.enSoundmode = AUDIO_SOUND_MODE_MONO;
     stFrame.u32Len = size;
-    stFrame.pVirAddr[0] = (HI_U8 *)data;
-    stFrame.u32PhyAddr[0] = 0; /* MPI will handle it if mapped correctly */
+    stFrame.u64VirAddr[0] = (HI_U8 *)data;
+    stFrame.u64PhyAddr[0] = 0; /* MPI will handle it if mapped correctly */
 
     result = HI_MPI_AO_SendFrame(g_aoDev, g_aoChn, &stFrame, 1000);
     return (result == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
@@ -2565,7 +2578,7 @@ static int32_t sdk_osd_region_init(RGN_HANDLE handle, uint32_t width, uint32_t h
 
     memset(&stRgnAttr, 0, sizeof(stRgnAttr));
     stRgnAttr.enType = OVERLAY_RGN;
-    stRgnAttr.unAttr.stOverlay.enPixelFmt = PIXEL_FORMAT_RGB_1555;
+    stRgnAttr.unAttr.stOverlay.enPixelFmt = PIXEL_FORMAT_ARGB_1555;
     stRgnAttr.unAttr.stOverlay.stSize.u32Width = width;
     stRgnAttr.unAttr.stOverlay.stSize.u32Height = height;
     stRgnAttr.unAttr.stOverlay.u32BgColor = 0; /* Transparent */
@@ -2631,7 +2644,7 @@ int local_sdk_video_osd_update_timestamp(int chn, bool state, struct tm *timesta
         if (result == HI_SUCCESS) {
             /* TODO: Implement bitmap text rendering here */
             /* For now, just clear/fill a small area to show it works */
-            memset((void *)stCanvas.u32VirtAddr, 0, stCanvas.u32Stride * stCanvas.stSize.u32Height);
+            memset((void *)(uintptr_t)stCanvas.u64VirtAddr, 0, stCanvas.u32Stride * stCanvas.stSize.u32Height);
             HI_MPI_RGN_UpdateCanvas(params->timestamp_hdl);
         }
     }
@@ -2658,7 +2671,7 @@ int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECT
     if (state && rectangles) {
         result = HI_MPI_RGN_GetCanvasInfo(params->rects_hdl, &stCanvas);
         if (result == HI_SUCCESS) {
-            uint16_t *pData = (uint16_t *)stCanvas.u32VirtAddr;
+            uint16_t *pData = (uint16_t *)(uintptr_t)stCanvas.u64VirtAddr;
             uint32_t stride = stCanvas.u32Stride / 2;
             
             /* Clear canvas */
@@ -2849,7 +2862,7 @@ int inner_change_resulu_type(int resolution, int *result) {
 static hi_s32   g_ivpHandle = -1;
 static uint32_t g_ivpResourceSize = 0;
 static HI_VOID *g_ivpResourceBuffer = NULL;
-static HI_U32   g_ivpPhysAddr = 0;
+static HI_U64   g_ivpPhysAddr = 0;
 static int32_t  g_ivpInitialized = 0;
 
 /**
@@ -2922,7 +2935,7 @@ static int32_t sample_ivp_read_file(const char *filename, uint8_t *buffer, uint3
  */
 int32_t sample_ivp_load_resource(const char *oms_file, int32_t chn) {
     uint32_t file_size = 0;
-    HI_U32 phys_addr = 0;
+    HI_U64 phys_addr = 0;
     HI_VOID *virt_addr = NULL;
     int32_t result;
     
@@ -2949,8 +2962,8 @@ int32_t sample_ivp_load_resource(const char *oms_file, int32_t chn) {
         return LOCALSDK_ERROR;
     }
 
-    sdk_log("[sdk][ivp] MMZ allocated - Physical: 0x%x, Virtual: %p, Size: %u\n",
-            phys_addr, virt_addr, file_size);
+    sdk_log("[sdk][ivp] MMZ allocated - Physical: 0x%llx, Virtual: %p, Size: %u\n",
+            (unsigned long long)phys_addr, virt_addr, file_size);
 
     /* Read OMS file into memory */
     result = sample_ivp_read_file(oms_file, (uint8_t *)virt_addr, file_size);
