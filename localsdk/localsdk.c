@@ -1277,6 +1277,14 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
+    /* Initialise the sceneauto library now that the ISP pipeline is up. It must
+       be initialised before any sceneauto_resume()/cut_night_mode() call (used
+       by the night subsystem), otherwise HI_SCENE_SetSceneMode logs
+       "please init sceneauto first!" and night_init fails. */
+    if (sceneauto_init() != 0) {
+        sdk_log("[sdk][video] sceneauto_init() failed (non-fatal)\n");
+    }
+
     sdk_log("[sdk][video] Video init complete\n");
     return LOCALSDK_OK;
 }
