@@ -57,6 +57,7 @@
 #include "mpi_adec.h"
 #include "hi_ivp.h"
 
+#include "hi_buffer.h"
 #include "hi_sns_ctrl.h"
 #include "platform/platform.h"
 
@@ -78,6 +79,10 @@ static VI_DEV   g_viDev = 0;
 static VI_PIPE  g_viPipe = 0;
 static VI_CHN   g_viChn = 0;
 static int32_t  g_videoStarted[2] = {0, 0};
+
+/* VPSS wrap buffer parameters for main channel (chn0), computed before VB init. */
+static HI_U32   g_mainWrapBufLine = 0;
+static HI_U32   g_mainWrapBufSize = 0;
 
 /* ============================================================================
    DEFINES AND CONSTANTS
@@ -1113,19 +1118,47 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
+    /* Pre-compute VPSS wrap buffer parameters for main channel (chn0 only).
+       HI_MPI_SYS_GetVPSSVENCWrapBufferLine is a pure calculation, safe before SYS init.
+       The wrap ring buffer limits VPSS output to ~416 lines instead of a full 1080p frame,
+       saving ~4 MB in the ~19 MB MMZ and making room for the 3DNR NR reference frame. */
+    {
+        VPSS_VENC_WRAP_PARAM_S stWrap;
+        memset(&stWrap, 0, sizeof(stWrap));
+        stWrap.bAllOnline       = HI_FALSE; /* VI_ONLINE_VPSS_OFFLINE */
+        stWrap.u32FrameRate     = g_sensor_cfg->sensor_fps;
+        stWrap.u32FullLinesStd  = g_sensor_cfg->u32FullLinesStd;
+        stWrap.stLargeStreamSize.u32Width  = g_sensor_cfg->isp_pub_attr.stSnsSize.u32Width;
+        stWrap.stLargeStreamSize.u32Height = g_sensor_cfg->isp_pub_attr.stSnsSize.u32Height;
+        stWrap.stSmallStreamSize.u32Width  = 640;
+        stWrap.stSmallStreamSize.u32Height = 360;
+        if (HI_MPI_SYS_GetVPSSVENCWrapBufferLine(&stWrap, &g_mainWrapBufLine) == HI_SUCCESS
+                && g_mainWrapBufLine > 0) {
+            g_mainWrapBufSize = VPSS_GetWrapBufferSize(
+                stWrap.stLargeStreamSize.u32Width,
+                stWrap.stLargeStreamSize.u32Height,
+                g_mainWrapBufLine,
+                PIXEL_FORMAT_YVU_SEMIPLANAR_420,
+                DATA_BITWIDTH_8, COMPRESS_MODE_NONE, DEFAULT_ALIGN);
+            sdk_log("[sdk][video] wrap: buf_line=%u size=%u\n",
+                    g_mainWrapBufLine, g_mainWrapBufSize);
+        } else {
+            sdk_log("[sdk][video] wrap calc failed, falling back to full-frame VB\n");
+            g_mainWrapBufLine = 0;
+            g_mainWrapBufSize = 0;
+        }
+    }
+
     /* VB pools (newer SDK layout: 64-bit u64BlkSize).
-       The MMZ zone on this board is only ~19 MB (kernel mem=45M of 64 MB), so
-       the VB footprint must stay small. In VI_ONLINE_VPSS_OFFLINE the VI->VPSS
-       link is on-chip: VI needs no DDR raw pool, so we only allocate the YUV
-       output pools that VPSS writes and VENC reads. Counts are kept low to
-       leave MMZ headroom for VENC reference/reconstruction frames.
-       Pool 0: main YUV420 1080p (VPSS chn0 / VENC).
-       Pool 1: sub  YUV420 640x360 (VPSS chn1 / VENC). */
+       Pool 0: main YUV420 1080p — wrap ring buffer if supported, else full frame.
+       Pool 1: sub  YUV420 640x360. */
     memset(&stVbConf, 0, sizeof(stVbConf));
     stVbConf.u32MaxPoolCnt = 2;
-    stVbConf.astCommPool[0].u64BlkSize = sdk_calc_yuv420_blk_size(
-        g_sensor_cfg->isp_pub_attr.stSnsSize.u32Width,
-        g_sensor_cfg->isp_pub_attr.stSnsSize.u32Height);
+    stVbConf.astCommPool[0].u64BlkSize = (g_mainWrapBufSize > 0)
+        ? g_mainWrapBufSize
+        : sdk_calc_yuv420_blk_size(
+            g_sensor_cfg->isp_pub_attr.stSnsSize.u32Width,
+            g_sensor_cfg->isp_pub_attr.stSnsSize.u32Height);
     stVbConf.astCommPool[0].u32BlkCnt  = g_board_cfg->vb_main_blk_cnt;
     stVbConf.astCommPool[1].u64BlkSize = sdk_calc_yuv420_blk_size(640, 360);
     stVbConf.astCommPool[1].u32BlkCnt  = g_board_cfg->vb_sub_blk_cnt;
@@ -1176,13 +1209,13 @@ int local_sdk_video_init(int fps) {
     stGrpAttr.enDynamicRange              = DYNAMIC_RANGE_SDR8;
     stGrpAttr.stFrameRate.s32SrcFrameRate = -1;
     stGrpAttr.stFrameRate.s32DstFrameRate = -1;
-    /* 3DNR disabled for now: its reference frame ("VPSS(0) Ref", ~3MB at 1080p)
-       was allocated right after the main VB pool, fragmenting the ~19MB MMZ into
-       gaps too small for VENC's contiguous buffers (VENC_CreateChn -> NOMEM
-       despite ~8.5MB free total). Disabling NR frees that block and merges the
-       free space into one ~7.7MB region. Re-enable later together with VENC
-       wrap mode (which shrinks the VB pool, as the original firmware did). */
-    stGrpAttr.bNrEn                       = HI_FALSE;
+    /* 3DNR: enabled now that the main VB pool uses wrap mode (~1.2 MB ring buffer
+       instead of ~3 MB full frames), leaving enough contiguous MMZ for the NR
+       reference frame and VENC buffers. */
+    stGrpAttr.bNrEn                        = HI_TRUE;
+    stGrpAttr.stNrAttr.enNrType            = VPSS_NR_TYPE_VIDEO;
+    stGrpAttr.stNrAttr.enNrMotionMode      = NR_MOTION_MODE_NORMAL;
+    stGrpAttr.stNrAttr.enCompressMode      = COMPRESS_MODE_FRAME;
 
     result = HI_MPI_VPSS_CreateGrp(g_vpssGrp, &stGrpAttr);
     if (result != HI_SUCCESS) {
@@ -1250,6 +1283,18 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] Failed to set channel attr: 0x%x\n", result);
         return LOCALSDK_ERROR;
+    }
+
+    /* Wrap mode on chn0 (only VPSS channel 0 supports wrap). Must be called
+       after SetChnAttr but before EnableChn. */
+    if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
+        VPSS_CHN_BUF_WRAP_S stWrapAttr;
+        stWrapAttr.bEnable           = HI_TRUE;
+        stWrapAttr.u32BufLine        = g_mainWrapBufLine;
+        stWrapAttr.u32WrapBufferSize = g_mainWrapBufSize;
+        result = HI_MPI_VPSS_SetChnBufWrapAttr(g_vpssGrp, g_vpssChn[chn], &stWrapAttr);
+        if (result != HI_SUCCESS)
+            sdk_log("[sdk][video] SetChnBufWrapAttr failed: 0x%x\n", result);
     }
 
     /* Enable channel */

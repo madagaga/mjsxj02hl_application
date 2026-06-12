@@ -29,10 +29,11 @@ static const board_cfg_t g_board_mjsxj02hl = {
     .ao_dev = 0,
 
     /* VB pool block counts.
-     * MMZ is ~19 MB (mem=45M of 64 MB). Keep counts low to leave headroom
-     * for VENC reference/reconstruction frames. */
-    .vb_main_blk_cnt = 2,
-    .vb_sub_blk_cnt  = 2,
+     * Main channel uses VPSS wrap mode (ring buffer limited to ~416 lines instead of
+     * a full 1080p frame), which frees ~4 MB and allows 3DNR NR reference frame to
+     * coexist with VENC buffers in the ~19 MB MMZ. cnt=1 sufficient for wrap. */
+    .vb_main_blk_cnt = 1,
+    .vb_sub_blk_cnt  = 5,
 
     /* IVP model: must match sub-channel resolution (640x360) */
     .ivp_oms_path = "/usr/app/local/ivp_re_im_allday_16chn_pr1_640x360_v1040.oms",

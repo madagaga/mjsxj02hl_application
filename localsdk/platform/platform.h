@@ -18,6 +18,7 @@ typedef struct {
     ISP_PUB_ATTR_S     isp_pub_attr;   /* includes Bayer pattern, WDR mode, fps */
     ISP_SNS_OBJ_S     *p_sns_obj;      /* libsns_*.so sensor object */
     HI_U32             sensor_fps;     /* application target framerate */
+    HI_U32             u32FullLinesStd; /* total sensor lines/frame at sensor_fps (VBI included) — for VPSS wrap buffer calculation */
 } sensor_cfg_t;
 
 /* All parameters that are specific to the camera board design (PCB/hardware).
