@@ -1314,8 +1314,11 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     stChnAttr.enCompressMode          = COMPRESS_MODE_NONE;
     stChnAttr.stFrameRate.s32SrcFrameRate = -1;
     stChnAttr.stFrameRate.s32DstFrameRate = -1;
-    stChnAttr.bMirror                 = options->mirror ? HI_TRUE : HI_FALSE;
-    stChnAttr.bFlip                   = options->flip   ? HI_TRUE : HI_FALSE;
+    /* The JXF22 is mounted rotated 180° on this board, so the sensor-native
+       image is upside-down + mirrored. Apply a base 180° (flip+mirror); the
+       user flip/mirror config options toggle on top of that (XOR). */
+    stChnAttr.bMirror                 = options->mirror ? HI_FALSE : HI_TRUE;
+    stChnAttr.bFlip                   = options->flip   ? HI_FALSE : HI_TRUE;
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
@@ -1358,8 +1361,9 @@ int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         return LOCALSDK_ERROR;
     }
 
-    stChnAttr.bMirror = options->mirror ? HI_TRUE : HI_FALSE;
-    stChnAttr.bFlip   = options->flip   ? HI_TRUE : HI_FALSE;
+    /* Base 180° correction (sensor mounted rotated) XOR user flip/mirror. */
+    stChnAttr.bMirror = options->mirror ? HI_FALSE : HI_TRUE;
+    stChnAttr.bFlip   = options->flip   ? HI_FALSE : HI_TRUE;
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
