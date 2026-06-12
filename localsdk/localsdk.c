@@ -27,6 +27,8 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <limits.h>
 
 
 /* Hisilicon MPP */
@@ -2671,10 +2673,22 @@ int local_sdk_video_set_night_mode() {
 
 int local_sdk_auto_night_light() {
     /* sceneauto (vendor libsceneauto.so) drives auto day/night ISP switching.
-       Initialise it lazily here, when the whole pipeline is streaming. If it
-       cannot start, degrade gracefully (no auto scene switching) rather than
-       aborting app init -- this vendor dependency is slated for rewrite. */
-    if (sceneauto_init() != 0) {
+       The library resolves its INI config path from the binary location via
+       getcwd()/dirname(), so we temporarily chdir to the scene INI directory
+       before calling sceneauto_init() to make the path resolution succeed.
+       Degrade gracefully if it still fails -- this vendor lib is slated for
+       rewrite on top of HI_MPI_ISP_*. */
+    char orig_cwd[PATH_MAX];
+    if (!getcwd(orig_cwd, sizeof(orig_cwd))) orig_cwd[0] = '\0';
+
+    if (g_board_cfg->scene_ini_dir && chdir(g_board_cfg->scene_ini_dir) != 0)
+        sdk_log("[sdk][night] chdir(%s) failed: %s\n", g_board_cfg->scene_ini_dir, strerror(errno));
+
+    int init_ret = sceneauto_init();
+
+    if (orig_cwd[0]) chdir(orig_cwd);
+
+    if (init_ret != 0) {
         sdk_log("[sdk][night] sceneauto_init failed; auto night switching disabled (degraded)\n");
         return LOCALSDK_OK;
     }

@@ -36,6 +36,10 @@ static const board_cfg_t g_board_mjsxj02hl = {
 
     /* IVP model: must match sub-channel resolution (640x360) */
     .ivp_oms_path = "/usr/app/local/ivp_re_im_allday_16chn_pr1_640x360_v1040.oms",
+
+    /* libsceneauto.so computes its config path from the binary location.
+     * chdir here before sceneauto_init() so the resolution yields this dir. */
+    .scene_ini_dir = "/usr/app/local/sensor.ini",
 };
 
 const board_cfg_t *platform_get_board_cfg(void) {

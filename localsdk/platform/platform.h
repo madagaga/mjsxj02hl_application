@@ -45,6 +45,10 @@ typedef struct {
     HI_U32         vb_sub_blk_cnt;
     /* IVP .oms model path (sub-channel resolution must match model) */
     const char    *ivp_oms_path;
+    /* Directory containing scene auto INI files (config_cfgaccess_hd.ini, ...).
+       libsceneauto.so resolves this path from the binary location, so we chdir
+       here before calling sceneauto_init() to make the resolution work. */
+    const char    *scene_ini_dir;
 } board_cfg_t;
 
 const sensor_cfg_t *platform_get_sensor_cfg(void);
