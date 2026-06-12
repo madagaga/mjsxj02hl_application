@@ -671,7 +671,7 @@ static int sdk_video_unbind_vi_vpss(void) {
     memset(&stSrcChn, 0, sizeof(stSrcChn));
     memset(&stDestChn, 0, sizeof(stDestChn));
 
-    stSrcChn.enModId = HI_ID_VIU;
+    stSrcChn.enModId = HI_ID_VI;
     stSrcChn.s32DevId = g_viPipe;
     stSrcChn.s32ChnId = g_viChn;
 
@@ -704,91 +704,75 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn, LOCALSDK_VIDEO_OPTION
 
     memset(&stVencChnAttr, 0, sizeof(stVencChnAttr));
     enType = sdk_video_payload_type(options->payload, jpeg);
-    stVencChnAttr.stVeAttr.enType = enType;
+
+    /* In this SDK the picture dims / profile / bufsize live in the common
+       stVencAttr; the codec sub-attrs are minimal and the GOP is separate. */
+    stVencChnAttr.stVencAttr.enType         = enType;
+    stVencChnAttr.stVencAttr.u32MaxPicWidth  = stSize.u32Width;
+    stVencChnAttr.stVencAttr.u32MaxPicHeight = stSize.u32Height;
+    stVencChnAttr.stVencAttr.u32PicWidth     = stSize.u32Width;
+    stVencChnAttr.stVencAttr.u32PicHeight    = stSize.u32Height;
+    stVencChnAttr.stVencAttr.u32Profile      = 0;
+    stVencChnAttr.stVencAttr.bByFrame        = HI_TRUE;
+
+    stVencChnAttr.stGopAttr.enGopMode            = VENC_GOPMODE_NORMALP;
+    stVencChnAttr.stGopAttr.stNormalP.s32IPQpDelta = 2;
 
     if (enType == PT_H264) {
-        VENC_ATTR_H264_S *attr = &stVencChnAttr.stVeAttr.stAttrH264e;
-        attr->u32MaxPicWidth = stSize.u32Width;
-        attr->u32MaxPicHeight = stSize.u32Height;
-        attr->u32PicWidth = stSize.u32Width;
-        attr->u32PicHeight = stSize.u32Height;
-        attr->u32BufSize = stSize.u32Width * stSize.u32Height;
-        attr->u32Profile = 0;
-        attr->bByFrame = HI_TRUE;
-        attr->u32BFrameNum = 0;
-        attr->u32RefNum = 1;
+        stVencChnAttr.stVencAttr.u32BufSize = stSize.u32Width * stSize.u32Height;
 
         if (options->rcmode == LOCALSDK_VIDEO_RCMODE_VARIABLE_BITRATE) {
             stVencChnAttr.stRcAttr.enRcMode = VENC_RC_MODE_H264VBR;
-            stVencChnAttr.stRcAttr.stAttrH264Vbr.u32Gop = options->gop ? options->gop : options->fps;
-            stVencChnAttr.stRcAttr.stAttrH264Vbr.u32StatTime = 1;
-            stVencChnAttr.stRcAttr.stAttrH264Vbr.u32SrcFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH264Vbr.fr32DstFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH264Vbr.u32MinQp = 10;
-            stVencChnAttr.stRcAttr.stAttrH264Vbr.u32MaxQp = 40;
-            stVencChnAttr.stRcAttr.stAttrH264Vbr.u32MaxBitRate = options->bitrate;
+            stVencChnAttr.stRcAttr.stH264Vbr.u32Gop           = options->gop ? options->gop : options->fps;
+            stVencChnAttr.stRcAttr.stH264Vbr.u32StatTime      = 1;
+            stVencChnAttr.stRcAttr.stH264Vbr.u32SrcFrameRate  = options->fps;
+            stVencChnAttr.stRcAttr.stH264Vbr.fr32DstFrameRate = options->fps;
+            stVencChnAttr.stRcAttr.stH264Vbr.u32MaxBitRate    = options->bitrate;
         } else if (options->rcmode == LOCALSDK_VIDEO_RCMODE_CONSTANT_QUALITY) {
             stVencChnAttr.stRcAttr.enRcMode = VENC_RC_MODE_H264FIXQP;
-            stVencChnAttr.stRcAttr.stAttrH264FixQp.u32Gop = options->gop ? options->gop : options->fps;
-            stVencChnAttr.stRcAttr.stAttrH264FixQp.u32SrcFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH264FixQp.fr32DstFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH264FixQp.u32IQp = 20;
-            stVencChnAttr.stRcAttr.stAttrH264FixQp.u32PQp = 23;
+            stVencChnAttr.stRcAttr.stH264FixQp.u32Gop           = options->gop ? options->gop : options->fps;
+            stVencChnAttr.stRcAttr.stH264FixQp.u32SrcFrameRate  = options->fps;
+            stVencChnAttr.stRcAttr.stH264FixQp.fr32DstFrameRate = options->fps;
+            stVencChnAttr.stRcAttr.stH264FixQp.u32IQp = 20;
+            stVencChnAttr.stRcAttr.stH264FixQp.u32PQp = 23;
         } else {
             stVencChnAttr.stRcAttr.enRcMode = VENC_RC_MODE_H264CBR;
-            stVencChnAttr.stRcAttr.stAttrH264Cbr.u32Gop = options->gop ? options->gop : options->fps;
-            stVencChnAttr.stRcAttr.stAttrH264Cbr.u32StatTime = 1;
-            stVencChnAttr.stRcAttr.stAttrH264Cbr.u32SrcFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH264Cbr.fr32DstFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH264Cbr.u32BitRate = options->bitrate;
-            stVencChnAttr.stRcAttr.stAttrH264Cbr.u32FluctuateLevel = 0;
+            stVencChnAttr.stRcAttr.stH264Cbr.u32Gop           = options->gop ? options->gop : options->fps;
+            stVencChnAttr.stRcAttr.stH264Cbr.u32StatTime      = 1;
+            stVencChnAttr.stRcAttr.stH264Cbr.u32SrcFrameRate  = options->fps;
+            stVencChnAttr.stRcAttr.stH264Cbr.fr32DstFrameRate = options->fps;
+            stVencChnAttr.stRcAttr.stH264Cbr.u32BitRate       = options->bitrate;
         }
     } else if (enType == PT_H265) {
-        VENC_ATTR_H265_S *attr = &stVencChnAttr.stVeAttr.stAttrH265e;
-        attr->u32MaxPicWidth = stSize.u32Width;
-        attr->u32MaxPicHeight = stSize.u32Height;
-        attr->u32PicWidth = stSize.u32Width;
-        attr->u32PicHeight = stSize.u32Height;
-        attr->u32BufSize = stSize.u32Width * stSize.u32Height * 2;
-        attr->u32Profile = 0;
-        attr->bByFrame = HI_TRUE;
-        attr->u32BFrameNum = 0;
-        attr->u32RefNum = 1;
+        stVencChnAttr.stVencAttr.u32BufSize = stSize.u32Width * stSize.u32Height * 2;
 
         if (options->rcmode == LOCALSDK_VIDEO_RCMODE_VARIABLE_BITRATE) {
             stVencChnAttr.stRcAttr.enRcMode = VENC_RC_MODE_H265VBR;
-            stVencChnAttr.stRcAttr.stAttrH265Vbr.u32Gop = options->gop ? options->gop : options->fps;
-            stVencChnAttr.stRcAttr.stAttrH265Vbr.u32StatTime = 1;
-            stVencChnAttr.stRcAttr.stAttrH265Vbr.u32SrcFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH265Vbr.fr32DstFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH265Vbr.u32MinQp = 10;
-            stVencChnAttr.stRcAttr.stAttrH265Vbr.u32MaxQp = 40;
-            stVencChnAttr.stRcAttr.stAttrH265Vbr.u32MaxBitRate = options->bitrate;
+            stVencChnAttr.stRcAttr.stH265Vbr.u32Gop           = options->gop ? options->gop : options->fps;
+            stVencChnAttr.stRcAttr.stH265Vbr.u32StatTime      = 1;
+            stVencChnAttr.stRcAttr.stH265Vbr.u32SrcFrameRate  = options->fps;
+            stVencChnAttr.stRcAttr.stH265Vbr.fr32DstFrameRate = options->fps;
+            stVencChnAttr.stRcAttr.stH265Vbr.u32MaxBitRate    = options->bitrate;
         } else if (options->rcmode == LOCALSDK_VIDEO_RCMODE_CONSTANT_QUALITY) {
             stVencChnAttr.stRcAttr.enRcMode = VENC_RC_MODE_H265FIXQP;
-            stVencChnAttr.stRcAttr.stAttrH265FixQp.u32Gop = options->gop ? options->gop : options->fps;
-            stVencChnAttr.stRcAttr.stAttrH265FixQp.u32SrcFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH265FixQp.fr32DstFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH265FixQp.u32IQp = 20;
-            stVencChnAttr.stRcAttr.stAttrH265FixQp.u32PQp = 23;
+            stVencChnAttr.stRcAttr.stH265FixQp.u32Gop           = options->gop ? options->gop : options->fps;
+            stVencChnAttr.stRcAttr.stH265FixQp.u32SrcFrameRate  = options->fps;
+            stVencChnAttr.stRcAttr.stH265FixQp.fr32DstFrameRate = options->fps;
+            stVencChnAttr.stRcAttr.stH265FixQp.u32IQp = 20;
+            stVencChnAttr.stRcAttr.stH265FixQp.u32PQp = 23;
         } else {
             stVencChnAttr.stRcAttr.enRcMode = VENC_RC_MODE_H265CBR;
-            stVencChnAttr.stRcAttr.stAttrH265Cbr.u32Gop = options->gop ? options->gop : options->fps;
-            stVencChnAttr.stRcAttr.stAttrH265Cbr.u32StatTime = 1;
-            stVencChnAttr.stRcAttr.stAttrH265Cbr.u32SrcFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH265Cbr.fr32DstFrmRate = options->fps;
-            stVencChnAttr.stRcAttr.stAttrH265Cbr.u32BitRate = options->bitrate;
-            stVencChnAttr.stRcAttr.stAttrH265Cbr.u32FluctuateLevel = 0;
+            stVencChnAttr.stRcAttr.stH265Cbr.u32Gop           = options->gop ? options->gop : options->fps;
+            stVencChnAttr.stRcAttr.stH265Cbr.u32StatTime      = 1;
+            stVencChnAttr.stRcAttr.stH265Cbr.u32SrcFrameRate  = options->fps;
+            stVencChnAttr.stRcAttr.stH265Cbr.fr32DstFrameRate = options->fps;
+            stVencChnAttr.stRcAttr.stH265Cbr.u32BitRate       = options->bitrate;
         }
     } else {
-        VENC_ATTR_JPEG_S *attr = &stVencChnAttr.stVeAttr.stAttrJpeg;
-        attr->u32MaxPicWidth = stSize.u32Width;
-        attr->u32MaxPicHeight = stSize.u32Height;
-        attr->u32PicWidth = stSize.u32Width;
-        attr->u32PicHeight = stSize.u32Height;
-        attr->u32BufSize = (((stSize.u32Width + 15) >> 4) << 4) * (((stSize.u32Height + 15) >> 4) << 4);
-        attr->bByFrame = HI_TRUE;
-        attr->bSupportDCF = HI_FALSE;
+        /* JPEG snapshot */
+        stVencChnAttr.stVencAttr.u32BufSize = (((stSize.u32Width + 15) >> 4) << 4) * (((stSize.u32Height + 15) >> 4) << 4);
+        stVencChnAttr.stVencAttr.stAttrJpege.bSupportDCF   = HI_FALSE;
+        stVencChnAttr.stVencAttr.stAttrJpege.enReceiveMode = VENC_PIC_RECEIVE_SINGLE;
     }
 
     result = HI_MPI_VENC_CreateChn(vencChn, &stVencChnAttr);
@@ -1037,7 +1021,7 @@ static int sdk_video_bind_vi_vpss(void) {
     memset(&stSrcChn, 0, sizeof(stSrcChn));
     memset(&stDestChn, 0, sizeof(stDestChn));
 
-    stSrcChn.enModId = HI_ID_VIU;
+    stSrcChn.enModId = HI_ID_VI;
     stSrcChn.s32DevId = g_viPipe;
     stSrcChn.s32ChnId = g_viChn;
 
