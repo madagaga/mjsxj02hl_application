@@ -1134,8 +1134,15 @@ int local_sdk_video_init(int fps) {
         stWrap.stLargeStreamSize.u32Height = g_sensor_cfg->isp_pub_attr.stSnsSize.u32Height;
         stWrap.stSmallStreamSize.u32Width  = 640;
         stWrap.stSmallStreamSize.u32Height = 360;
-        if (HI_MPI_SYS_GetVPSSVENCWrapBufferLine(&stWrap, &g_mainWrapBufLine) == HI_SUCCESS
-                && g_mainWrapBufLine > 0) {
+        if (g_board_cfg->vb_main_wrap_lines > 0) {
+            /* Board hardcodes wrap lines (original firmware value) — skip API. */
+            g_mainWrapBufLine = g_board_cfg->vb_main_wrap_lines;
+        } else if (HI_MPI_SYS_GetVPSSVENCWrapBufferLine(&stWrap, &g_mainWrapBufLine) != HI_SUCCESS
+                || g_mainWrapBufLine == 0) {
+            sdk_log("[sdk][video] wrap calc failed, falling back to full-frame VB\n");
+            g_mainWrapBufLine = 0;
+        }
+        if (g_mainWrapBufLine > 0) {
             g_mainWrapBufSize = VPSS_GetWrapBufferSize(
                 stWrap.stLargeStreamSize.u32Width,
                 stWrap.stLargeStreamSize.u32Height,
@@ -1144,10 +1151,6 @@ int local_sdk_video_init(int fps) {
                 DATA_BITWIDTH_8, COMPRESS_MODE_NONE, DEFAULT_ALIGN);
             sdk_log("[sdk][video] wrap: buf_line=%u size=%u\n",
                     g_mainWrapBufLine, g_mainWrapBufSize);
-        } else {
-            sdk_log("[sdk][video] wrap calc failed, falling back to full-frame VB\n");
-            g_mainWrapBufLine = 0;
-            g_mainWrapBufSize = 0;
         }
     }
 

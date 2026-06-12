@@ -35,6 +35,11 @@ static const board_cfg_t g_board_mjsxj02hl = {
     .vb_main_blk_cnt = 1,
     .vb_sub_blk_cnt  = 5,
 
+    /* Wrap lines hardcoded to match original firmware (416 lines = 1,198,080 B).
+       GetVPSSVENCWrapBufferLine returns only 160 (minimum), which triggers
+       ILLEGAL_PARAM on this SoC; 416 gives the extra margin the HW requires. */
+    .vb_main_wrap_lines = 416,
+
     /* IVP model: must match sub-channel resolution (640x360) */
     .ivp_oms_path = "/usr/app/local/ivp_re_im_allday_16chn_pr1_640x360_v1040.oms",
 

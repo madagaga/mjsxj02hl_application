@@ -46,6 +46,10 @@ typedef struct {
     HI_U32         vb_sub_blk_cnt;
     /* IVP .oms model path (sub-channel resolution must match model) */
     const char    *ivp_oms_path;
+    /* Wrap buffer lines for VPSS chn0 ring mode.  If non-zero, used directly
+       instead of HI_MPI_SYS_GetVPSSVENCWrapBufferLine (which gives the minimum;
+       the original firmware hardcodes 416 for extra margin). */
+    HI_U32         vb_main_wrap_lines;
     /* Directory containing scene auto INI files (config_cfgaccess_hd.ini, ...).
        libsceneauto.so resolves this path from the binary location, so we chdir
        here before calling sceneauto_init() to make the resolution work. */
