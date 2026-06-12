@@ -10,3 +10,8 @@ PVS-Studio.html
 exec log
 research
 .claude/settings.local.json
+
+# Local notes / scratch
+CLAUDE.md
+trace.txt
+tmp/

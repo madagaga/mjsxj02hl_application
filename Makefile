@@ -90,7 +90,7 @@ librtspserver.so:
 # APPLICATION OBJECTS #
 #######################
 
-objects: logger.o localsdk.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o
+objects: logger.o localsdk.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o sensor.o board.o
 
 logger.o: ./logger/logger.c
 	$(CC) $(CCFLAGS) -c ./logger/logger.c -o $(OUTPUT)/objects/logger.o
@@ -133,6 +133,12 @@ homeassistant.o: ./mqtt/homeassistant.c
 
 rtsp.o: ./rtsp/rtsp.c
 	$(CC) $(CCFLAGS) -c ./rtsp/rtsp.c -o $(OUTPUT)/objects/rtsp.o
+
+sensor.o: ./localsdk/platform/sensor_jxf22.c
+	$(CC) $(CCFLAGS) -c ./localsdk/platform/sensor_jxf22.c -o $(OUTPUT)/objects/sensor.o
+
+board.o: ./localsdk/platform/board_mjsxj02hl.c
+	$(CC) $(CCFLAGS) -c ./localsdk/platform/board_mjsxj02hl.c -o $(OUTPUT)/objects/board.o
 
 clean:
 	-rm -rf $(OUTPUT)/*

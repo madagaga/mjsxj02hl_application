@@ -56,10 +56,7 @@
 #include "hi_ivp.h"
 
 #include "hi_sns_ctrl.h"
-
-/* SOI F22 sensor object exported by libsns_f22.so (not declared in the stock
-   3516e hi_sns_ctrl.h, which only lists Hisilicon reference sensors). */
-extern ISP_SNS_OBJ_S stSnsSoiSensorObj;
+#include "platform/platform.h"
 
 /* sceneauto library — handles ISP scene switching and auto night mode */
 extern int sceneauto_cut_night_mode(int mode);
@@ -99,17 +96,6 @@ static int32_t  g_videoStarted[2] = {0, 0};
 #define USLEEP_100MS 100000
 #define USLEEP_50MS 50000
 
-/* GPIO pin assignments (hi3518ev300 hardware, from runtime trace) */
-#define GPIO_PIN_IR_LED_B       53   /* IR LED B, init=0 */
-#define GPIO_PIN_IR_LED_A       52   /* IR LED A, init=1 */
-#define GPIO_PIN_IRCUT_B        68   /* IR-cut filter motor B, init=0 */
-#define GPIO_PIN_IRCUT_A        70   /* IR-cut filter motor A, init=0 */
-#define GPIO_PIN_ORANGE_LED     16   /* Orange indicator LED, init=0 */
-#define GPIO_PIN_BLUE_LED       55   /* Blue indicator LED, init=1 */
-#define GPIO_PIN_BUTTON_SETUP    0   /* Setup/reset button (input) */
-#define GPIO_PIN_PHOTO_SENSOR    9   /* Photo-sensitive sensor (input) */
-#define IRCUT_MOTOR_STEP_US  50000   /* 50ms between IR-cut motor steps */
-
 /* Error codes and status values */
 #define SDK_INVALID_CHANNEL 0xffffffff
 #define SDK_SUCCESS 0
@@ -118,6 +104,10 @@ static int32_t  g_videoStarted[2] = {0, 0};
 /* ============================================================================
    GLOBAL STATE AND CALLBACKS
    ============================================================================ */
+
+/* Platform config pointers — set once in localsdk_init(), used everywhere */
+static const sensor_cfg_t *g_sensor_cfg = NULL;
+static const board_cfg_t  *g_board_cfg  = NULL;
 
 static int (*g_sdkLogPrintf_cb)(const char *, ...) = NULL;
 static int (*g_sdkShellCall_cb)(const char *) = NULL;
@@ -385,14 +375,14 @@ static int gpio_write(int pin, int value) {
 
 static int gpio_all_init(void) {
     /* Order from runtime trace lines 10-39 */
-    if (gpio_init_pin(GPIO_PIN_IR_LED_B,     "out", 0) != 0) return -1;
-    if (gpio_init_pin(GPIO_PIN_IR_LED_A,     "out", 1) != 0) return -1;
-    if (gpio_init_pin(GPIO_PIN_IRCUT_B,      "out", 0) != 0) return -1;
-    if (gpio_init_pin(GPIO_PIN_IRCUT_A,      "out", 0) != 0) return -1;
-    if (gpio_init_pin(GPIO_PIN_ORANGE_LED,   "out", 0) != 0) return -1;
-    if (gpio_init_pin(GPIO_PIN_BLUE_LED,     "out", 1) != 0) return -1;
-    if (gpio_init_pin(GPIO_PIN_BUTTON_SETUP, "in",  1) != 0) return -1;
-    if (gpio_init_pin(GPIO_PIN_PHOTO_SENSOR, "in",  0) != 0) return -1;
+    if (gpio_init_pin(g_board_cfg->gpio_ir_led_b,     "out", 0) != 0) return -1;
+    if (gpio_init_pin(g_board_cfg->gpio_ir_led_a,     "out", 1) != 0) return -1;
+    if (gpio_init_pin(g_board_cfg->gpio_ircut_b,      "out", 0) != 0) return -1;
+    if (gpio_init_pin(g_board_cfg->gpio_ircut_a,      "out", 0) != 0) return -1;
+    if (gpio_init_pin(g_board_cfg->gpio_led_orange,   "out", 0) != 0) return -1;
+    if (gpio_init_pin(g_board_cfg->gpio_led_blue,     "out", 1) != 0) return -1;
+    if (gpio_init_pin(g_board_cfg->gpio_button_setup, "in",  1) != 0) return -1;
+    if (gpio_init_pin(g_board_cfg->gpio_photo_sensor, "in",  0) != 0) return -1;
     return 0;
 }
 
@@ -442,12 +432,12 @@ static void *platform_thread(void *arg) {
     printf("[SDK-THREAD]dbg: Platform Thread Start...\n");
 
     char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", GPIO_PIN_BUTTON_SETUP);
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", g_board_cfg->gpio_button_setup);
 
     int last_state = 1;
     while (1) {
         usleep(50000);
-        int v = gpio_read_value(GPIO_PIN_BUTTON_SETUP);
+        int v = gpio_read_value(g_board_cfg->gpio_button_setup);
         if (v == 0 && last_state == 1) {
             pthread_mutex_lock(&g_platformMutex);
             if (g_keydownCb) g_keydownCb();
@@ -485,10 +475,15 @@ int localsdk_set_shellcall_func(int (*callback)(const char *)) {
  * @brief Initialize the SDK with HISILICON subsystems
  */
 int localsdk_init() {
+    g_sensor_cfg = platform_get_sensor_cfg();
+    g_board_cfg  = platform_get_board_cfg();
+
     puts("----------------------------------------");
     puts("    OPEN LOCALSDK (oss)        ('_)')");
     puts("----------------------------------------");
     puts("    platform: hi3518ev300 ");
+    printf("    sensor  : %s \n", g_sensor_cfg->name);
+    printf("    board   : %s \n", g_board_cfg->name);
     printf("    sdk ver : %d \n", SDK_VERSION);
     printf("    build   : %s (%s) \n", __DATE__, __TIME__);
     puts("----------------------------------------");
@@ -548,11 +543,12 @@ int localsdk_destory() {
         g_ispThread = 0;
     }
 
-    if (stSnsSoiSensorObj.pfnUnRegisterCallback) {
+    if (g_sensor_cfg && g_sensor_cfg->p_sns_obj &&
+        g_sensor_cfg->p_sns_obj->pfnUnRegisterCallback) {
         ALG_LIB_S stAeLib = {0}, stAwbLib = {0};
         strncpy(stAeLib.acLibName,  HI_AE_LIB_NAME,  sizeof(stAeLib.acLibName)  - 1);
         strncpy(stAwbLib.acLibName, HI_AWB_LIB_NAME, sizeof(stAwbLib.acLibName) - 1);
-        stSnsSoiSensorObj.pfnUnRegisterCallback(0, &stAeLib, &stAwbLib);
+        g_sensor_cfg->p_sns_obj->pfnUnRegisterCallback(0, &stAeLib, &stAwbLib);
     }
     
     /* Cleanup locks */
@@ -795,74 +791,13 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn, LOCALSDK_VIDEO_OPTION
     return LOCALSDK_OK;
 }
 
-/* ----------------------------------------------------------------------------
-   JXF22 (SOI F22) sensor attributes — values captured from the original
-   liblocalsdk.so runtime trace (trace.txt) and cross-checked against the
-   3516ev200 sample (DEV_ATTR_SC2231 / PIPE_ATTR_1920x1080_RAW10). The camera
-   uses 2-lane MIPI, RAW10, 1080p30 linear, VI online -> VPSS offline.
-   ---------------------------------------------------------------------------- */
-static const combo_dev_attr_t MIPI_ATTR_JXF22 = {
-    .devno      = 0,
-    .input_mode = INPUT_MODE_MIPI,
-    .data_rate  = MIPI_DATA_RATE_X1,
-    .img_rect   = {0, 0, 1920, 1080},
-    .mipi_attr  = {
-        DATA_TYPE_RAW_10BIT,
-        HI_MIPI_WDR_MODE_NONE,
-        {0, 2, -1, -1}
-    }
-};
-
-static const VI_DEV_ATTR_S DEV_ATTR_JXF22 = {
-    VI_MODE_MIPI,
-    VI_WORK_MODE_1Multiplex,
-    {0xFFC00000, 0x0},
-    VI_SCAN_PROGRESSIVE,
-    { -1, -1, -1, -1},
-    VI_DATA_SEQ_YUYV,
-    {
-        VI_VSYNC_PULSE, VI_VSYNC_NEG_LOW, VI_HSYNC_VALID_SINGNAL, VI_HSYNC_NEG_HIGH, VI_VSYNC_VALID_SINGAL, VI_VSYNC_VALID_NEG_HIGH,
-        {
-            0, 1920, 0,
-            0, 1080, 0,
-            0, 0,    0
-        }
-    },
-    VI_DATA_TYPE_RGB,
-    HI_FALSE,
-    {1920, 1080},
-    {
-        { {1920, 1080} },
-        { VI_REPHASE_MODE_NONE, VI_REPHASE_MODE_NONE }
-    },
-    {
-        WDR_MODE_NONE,
-        1080
-    },
-    DATA_RATE_X1
-};
-
-static const VI_PIPE_ATTR_S PIPE_ATTR_JXF22 = {
-    VI_PIPE_BYPASS_NONE, HI_FALSE, HI_FALSE,
-    1920, 1080,
-    PIXEL_FORMAT_RGB_BAYER_10BPP,
-    COMPRESS_MODE_NONE,
-    DATA_BITWIDTH_10,
-    HI_TRUE,
-    {
-        PIXEL_FORMAT_YVU_SEMIPLANAR_420,
-        DATA_BITWIDTH_8,
-        VI_NR_REF_FROM_RFR,
-        COMPRESS_MODE_NONE
-    },
-    HI_FALSE,
-    { -1, -1 }
-};
+/* Sensor and board attributes come from platform/sensor_jxf22.c and
+   platform/board_mjsxj02hl.c, accessed via g_sensor_cfg / g_board_cfg. */
 
 /* MIPI bring-up sequence, ported faithfully from SAMPLE_COMM_VI_StartMIPI:
    HsMode -> EnableMipiClock -> ResetMipi -> EnableSensorClock -> ResetSensor
    -> SetDevAttr -> UnresetMipi -> UnresetSensor. */
-static int sdk_video_mipi_init_f22(void) {
+static int sdk_video_mipi_init(void) {
     int fd;
     lane_divide_mode_t hsMode = LANE_DIVIDE_MODE_0;
     combo_dev_t  devno  = 0;
@@ -902,7 +837,7 @@ static int sdk_video_mipi_init_f22(void) {
         return LOCALSDK_ERROR;
     }
 
-    memcpy(&stComboAttr, &MIPI_ATTR_JXF22, sizeof(stComboAttr));
+    memcpy(&stComboAttr, &g_sensor_cfg->mipi_attr, sizeof(stComboAttr));
     stComboAttr.devno = 0;
     if (ioctl(fd, HI_MIPI_SET_DEV_ATTR, &stComboAttr) != 0) {
         sdk_log("[sdk][video] HI_MIPI_SET_DEV_ATTR failed\n");
@@ -928,7 +863,7 @@ static int sdk_video_mipi_init_f22(void) {
 /* VI bring-up in the pipeline model (matches libmpi.so exports):
    SetDevAttr -> EnableDev -> SetDevBindPipe -> CreatePipe -> StartPipe
    -> SetChnAttr -> EnableChn. */
-static int sdk_video_vi_start_f22(void) {
+static int sdk_video_vi_start(void) {
     VI_DEV_ATTR_S      stViDevAttr;
     VI_PIPE_ATTR_S     stPipeAttr;
     VI_CHN_ATTR_S      stChnAttr;
@@ -936,13 +871,13 @@ static int sdk_video_vi_start_f22(void) {
     HI_S32 result;
 
     /* Configure MIPI first */
-    if (sdk_video_mipi_init_f22() != LOCALSDK_OK) {
+    if (sdk_video_mipi_init() != LOCALSDK_OK) {
         sdk_log("[sdk][video] MIPI init failed\n");
         return LOCALSDK_ERROR;
     }
 
     /* --- VI device --- */
-    memcpy(&stViDevAttr, &DEV_ATTR_JXF22, sizeof(stViDevAttr));
+    memcpy(&stViDevAttr, &g_sensor_cfg->vi_dev_attr, sizeof(stViDevAttr));
     result = HI_MPI_VI_SetDevAttr(g_viDev, &stViDevAttr);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] HI_MPI_VI_SetDevAttr failed: 0x%x\n", result);
@@ -966,7 +901,7 @@ static int sdk_video_vi_start_f22(void) {
     }
 
     /* --- VI pipe --- */
-    memcpy(&stPipeAttr, &PIPE_ATTR_JXF22, sizeof(stPipeAttr));
+    memcpy(&stPipeAttr, &g_sensor_cfg->vi_pipe_attr, sizeof(stPipeAttr));
     result = HI_MPI_VI_CreatePipe(g_viPipe, &stPipeAttr);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] HI_MPI_VI_CreatePipe failed: 0x%x\n", result);
@@ -983,8 +918,8 @@ static int sdk_video_vi_start_f22(void) {
 
     /* --- VI physical channel --- */
     memset(&stChnAttr, 0, sizeof(stChnAttr));
-    stChnAttr.stSize.u32Width  = 1920;
-    stChnAttr.stSize.u32Height = 1080;
+    stChnAttr.stSize.u32Width  = g_sensor_cfg->isp_pub_attr.stSnsSize.u32Width;
+    stChnAttr.stSize.u32Height = g_sensor_cfg->isp_pub_attr.stSnsSize.u32Height;
     stChnAttr.enPixelFormat    = PIXEL_FORMAT_YVU_SEMIPLANAR_420;
     stChnAttr.enDynamicRange   = DYNAMIC_RANGE_SDR8;
     stChnAttr.enVideoFormat    = VIDEO_FORMAT_LINEAR;
@@ -1034,8 +969,6 @@ static int sdk_video_bind_vi_vpss(void) {
     return (HI_MPI_SYS_Bind(&stSrcChn, &stDestChn) == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
-/* Camera/Sensor defaults (hi3518ev300 + f22 per firmware) */
-#define SDK_SENSOR_F22_FPS_DEFAULT 20
 #define SDK_SYS_ALIGN_WIDTH        64
 
 static uint32_t sdk_align_up(uint32_t value, uint32_t align) {
@@ -1054,7 +987,7 @@ static void *sdk_isp_thread(void *arg) {
     return NULL;
 }
 
-static int sdk_video_sensor_register_f22(void) {
+static int sdk_video_sensor_register(void) {
     ALG_LIB_S stAeLib, stAwbLib;
 
     memset(&stAeLib,  0, sizeof(stAeLib));
@@ -1064,12 +997,12 @@ static int sdk_video_sensor_register_f22(void) {
     strncpy(stAeLib.acLibName,  HI_AE_LIB_NAME,  sizeof(stAeLib.acLibName)  - 1);
     strncpy(stAwbLib.acLibName, HI_AWB_LIB_NAME, sizeof(stAwbLib.acLibName) - 1);
 
-    if (!stSnsSoiSensorObj.pfnRegisterCallback) {
-        sdk_log("[sdk][video] stSnsSoiSensorObj.pfnRegisterCallback is NULL\n");
+    if (!g_sensor_cfg->p_sns_obj->pfnRegisterCallback) {
+        sdk_log("[sdk][video] sensor pfnRegisterCallback is NULL\n");
         return LOCALSDK_ERROR;
     }
 
-    int32_t result = stSnsSoiSensorObj.pfnRegisterCallback(0, &stAeLib, &stAwbLib);
+    int32_t result = g_sensor_cfg->p_sns_obj->pfnRegisterCallback(0, &stAeLib, &stAwbLib);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] sensor pfnRegisterCallback failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
@@ -1077,13 +1010,13 @@ static int sdk_video_sensor_register_f22(void) {
     return LOCALSDK_OK;
 }
 
-static int sdk_video_isp_init_minimal(int fps) {
+static int sdk_video_isp_init(int fps) {
     int32_t result;
     ISP_PUB_ATTR_S stPubAttr;
     ISP_WDR_MODE_S stWdrMode;
     ALG_LIB_S stLib;
 
-    result = sdk_video_sensor_register_f22();
+    result = sdk_video_sensor_register();
     if (result != LOCALSDK_OK) {
         sdk_log("[sdk][video] sensor registration failed\n");
         return LOCALSDK_ERROR;
@@ -1112,17 +1045,7 @@ static int sdk_video_isp_init_minimal(int fps) {
         return LOCALSDK_ERROR;
     }
 
-    memset(&stPubAttr, 0, sizeof(stPubAttr));
-    stPubAttr.stWndRect.s32X = 0;
-    stPubAttr.stWndRect.s32Y = 0;
-    stPubAttr.stWndRect.u32Width = 1920;
-    stPubAttr.stWndRect.u32Height = 1080;
-    stPubAttr.stSnsSize.u32Width = 1920;
-    stPubAttr.stSnsSize.u32Height = 1080;
-    stPubAttr.f32FrameRate = 30.0f;       /* sensor native 1080p30; app retimes to 20 later */
-    stPubAttr.enBayer = BAYER_BGGR;
-    stPubAttr.enWDRMode = WDR_MODE_NONE;
-    stPubAttr.u8SnsMode = 0;
+    memcpy(&stPubAttr, &g_sensor_cfg->isp_pub_attr, sizeof(stPubAttr));
     (void)fps;
 
     result = HI_MPI_ISP_SetPubAttr(0, &stPubAttr);
@@ -1145,7 +1068,7 @@ static int sdk_video_isp_init_minimal(int fps) {
     return LOCALSDK_OK;
 }
 
-static int sdk_video_vi_isp_init_f22(int fps) {
+static int sdk_video_vi_isp_init(int fps) {
     int32_t result;
 
     /* No manual pinmux/clock setup here. The VI/MIPI pinmux, sensor clocks and
@@ -1158,15 +1081,15 @@ static int sdk_video_vi_isp_init_f22(int fps) {
     /* Order matters: bring up MIPI + VI dev/pipe/chn FIRST, then ISP. The ISP
        attaches to the VI pipe, and the sensor i2c writes (cmos/soi_sensor_init)
        happen during ISP init using the sensor clock enabled by MIPI bring-up. */
-    result = sdk_video_vi_start_f22();
+    result = sdk_video_vi_start();
     if (result != LOCALSDK_OK) {
         sdk_log("[sdk][video] VI start failed\n");
         return LOCALSDK_ERROR;
     }
 
-    result = sdk_video_isp_init_minimal(fps);
+    result = sdk_video_isp_init(fps);
     if (result != LOCALSDK_OK) {
-        sdk_log("[sdk][video] Minimal ISP init failed\n");
+        sdk_log("[sdk][video] ISP init failed\n");
         return LOCALSDK_ERROR;
     }
 
@@ -1198,10 +1121,12 @@ int local_sdk_video_init(int fps) {
        Pool 1: sub  YUV420 640x360 (VPSS chn1 / VENC). */
     memset(&stVbConf, 0, sizeof(stVbConf));
     stVbConf.u32MaxPoolCnt = 2;
-    stVbConf.astCommPool[0].u64BlkSize = sdk_calc_yuv420_blk_size(1920, 1080);
-    stVbConf.astCommPool[0].u32BlkCnt  = 2;
+    stVbConf.astCommPool[0].u64BlkSize = sdk_calc_yuv420_blk_size(
+        g_sensor_cfg->isp_pub_attr.stSnsSize.u32Width,
+        g_sensor_cfg->isp_pub_attr.stSnsSize.u32Height);
+    stVbConf.astCommPool[0].u32BlkCnt  = g_board_cfg->vb_main_blk_cnt;
     stVbConf.astCommPool[1].u64BlkSize = sdk_calc_yuv420_blk_size(640, 360);
-    stVbConf.astCommPool[1].u32BlkCnt  = 2;
+    stVbConf.astCommPool[1].u32BlkCnt  = g_board_cfg->vb_sub_blk_cnt;
 
     HI_MPI_SYS_Exit();
     HI_MPI_VB_Exit();
@@ -1234,8 +1159,8 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
-    /* VI/ISP (sensor f22) */
-    result = sdk_video_vi_isp_init_f22(fps);
+    /* VI/ISP */
+    result = sdk_video_vi_isp_init(fps);
     if (result != LOCALSDK_OK) {
         sdk_log("[sdk][video] VI/ISP init failed\n");
         return LOCALSDK_ERROR;
@@ -1243,8 +1168,8 @@ int local_sdk_video_init(int fps) {
 
     /* VPSS group */
     memset(&stGrpAttr, 0, sizeof(VPSS_GRP_ATTR_S));
-    stGrpAttr.u32MaxW                     = 1920;
-    stGrpAttr.u32MaxH                     = 1080;
+    stGrpAttr.u32MaxW                     = g_sensor_cfg->isp_pub_attr.stSnsSize.u32Width;
+    stGrpAttr.u32MaxH                     = g_sensor_cfg->isp_pub_attr.stSnsSize.u32Height;
     stGrpAttr.enPixelFormat               = PIXEL_FORMAT_YVU_SEMIPLANAR_420;
     stGrpAttr.enDynamicRange              = DYNAMIC_RANGE_SDR8;
     stGrpAttr.stFrameRate.s32SrcFrameRate = -1;
@@ -1314,11 +1239,10 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     stChnAttr.enCompressMode          = COMPRESS_MODE_NONE;
     stChnAttr.stFrameRate.s32SrcFrameRate = -1;
     stChnAttr.stFrameRate.s32DstFrameRate = -1;
-    /* The JXF22 is mounted rotated 180° on this board, so the sensor-native
-       image is upside-down + mirrored. Apply a base 180° (flip+mirror); the
-       user flip/mirror config options toggle on top of that (XOR). */
-    stChnAttr.bMirror                 = options->mirror ? HI_FALSE : HI_TRUE;
-    stChnAttr.bFlip                   = options->flip   ? HI_FALSE : HI_TRUE;
+    /* Base orientation from board (sensor mounting), XOR'd with user config.
+       Both HI_BOOL and options->mirror/flip are int-compatible for XOR. */
+    stChnAttr.bMirror = g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror;
+    stChnAttr.bFlip   = g_board_cfg->default_flip   ^ (HI_BOOL)options->flip;
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
@@ -1873,11 +1797,11 @@ int local_sdk_video_set_kbps(int param_1, int param_2) {
    AUDIO SUBSYSTEM - HISILICON IMPLEMENTATION
    ============================================================================ */
 
-/* Global audio state */
-static AUDIO_DEV g_aiDev = 0;      /* Audio Input Device */
-static AI_CHN g_aiChn = 0;         /* Audio Input Channel */
-static AUDIO_DEV g_aoDev = 0;      /* Audio Output Device (inner codec = dev 0; dev 1 invalid on this SoC) */
-static AO_CHN g_aoChn = 0;         /* Audio Output Channel */
+/* Global audio state — ai_dev/ao_dev initialised from board cfg in local_sdk_audio_init() */
+static AUDIO_DEV g_aiDev = 0;
+static AI_CHN g_aiChn = 0;
+static AUDIO_DEV g_aoDev = 0;
+static AO_CHN g_aoChn = 0;
 static AENC_CHN g_aencChn = 0;     /* Audio Encoder Channel */
 static ADEC_CHN g_adecChn = 0;     /* Audio Decoder Channel */
 static int32_t g_audioStarted = 0;
@@ -1916,6 +1840,9 @@ int local_sdk_audio_init() {
     int32_t result;
 
     sdk_log("[sdk][audio] Initializing audio subsystem\n");
+
+    g_aiDev = g_board_cfg->ai_dev;
+    g_aoDev = g_board_cfg->ao_dev;
 
     memset(&stAioAttr, 0, sizeof(AIO_ATTR_S));
     stAioAttr.enSamplerate   = AUDIO_SAMPLE_RATE_8000; /* G.711 standard */
@@ -2705,8 +2632,8 @@ int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECT
  * @brief Control indicator LEDs (orange and blue)
  */
 int local_sdk_indicator_led_option(bool orange, bool blue) {
-    gpio_write(GPIO_PIN_ORANGE_LED, orange ? 1 : 0);
-    gpio_write(GPIO_PIN_BLUE_LED,   blue   ? 1 : 0);
+    gpio_write(g_board_cfg->gpio_led_orange, orange ? 1 : 0);
+    gpio_write(g_board_cfg->gpio_led_blue,   blue   ? 1 : 0);
     return LOCALSDK_OK;
 }
 
@@ -2762,7 +2689,7 @@ int local_sdk_auto_night_light() {
  * @brief Enable manual night mode (IR LED on)
  */
 int local_sdk_open_night_light() {
-    gpio_write(GPIO_PIN_IR_LED_A, 1);
+    gpio_write(g_board_cfg->gpio_ir_led_a, 1);
     return LOCALSDK_OK;
 }
 
@@ -2770,8 +2697,8 @@ int local_sdk_open_night_light() {
  * @brief Disable night light (IR LED off) - from trace: gpio52=0, gpio53=0
  */
 int local_sdk_close_night_light() {
-    gpio_write(GPIO_PIN_IR_LED_A, 0);
-    gpio_write(GPIO_PIN_IR_LED_B, 0);
+    gpio_write(g_board_cfg->gpio_ir_led_a, 0);
+    gpio_write(g_board_cfg->gpio_ir_led_b, 0);
     return LOCALSDK_OK;
 }
 
@@ -2789,9 +2716,9 @@ int local_sdk_night_state_set_callback(int (*callback)(int state)) {
  */
 int local_sdk_open_ircut() {
     printf("<>===================< IRcut on >==================<>\n");
-    gpio_write(GPIO_PIN_IRCUT_A, 1);
-    usleep(IRCUT_MOTOR_STEP_US);
-    gpio_write(GPIO_PIN_IRCUT_B, 1);
+    gpio_write(g_board_cfg->gpio_ircut_a, 1);
+    usleep(g_board_cfg->gpio_ircut_step_us);
+    gpio_write(g_board_cfg->gpio_ircut_b, 1);
     return LOCALSDK_OK;
 }
 
@@ -2800,9 +2727,9 @@ int local_sdk_open_ircut() {
  */
 int local_sdk_close_ircut() {
     printf("<>===================< IRcut off >=================<>\n");
-    gpio_write(GPIO_PIN_IRCUT_A, 0);
-    usleep(IRCUT_MOTOR_STEP_US);
-    gpio_write(GPIO_PIN_IRCUT_B, 0);
+    gpio_write(g_board_cfg->gpio_ircut_a, 0);
+    usleep(g_board_cfg->gpio_ircut_step_us);
+    gpio_write(g_board_cfg->gpio_ircut_b, 0);
     return LOCALSDK_OK;
 }
 
@@ -3024,7 +2951,7 @@ int32_t sample_ivp_init(int32_t width, int32_t height, const char *oms_file) {
     }
     
     if (!oms_file) {
-        oms_file = "/usr/app/local/ivp_re_im_allday_16chn_pr1_640x360_v1040.oms";
+        oms_file = g_board_cfg->ivp_oms_path;
     }
     
     sdk_log("[sdk][ivp] Initializing IVP: %dx%d with model: %s\n", 
