@@ -931,8 +931,10 @@ static int sdk_video_vi_start(void) {
     stChnAttr.enDynamicRange   = DYNAMIC_RANGE_SDR8;
     stChnAttr.enVideoFormat    = VIDEO_FORMAT_LINEAR;
     stChnAttr.enCompressMode   = COMPRESS_MODE_NONE;
-    stChnAttr.bMirror          = HI_FALSE;
-    stChnAttr.bFlip            = HI_FALSE;
+    /* Board correction (sensor mounted 180°) applied here, upstream of VPSS.
+       Keeping bMirror/bFlip=FALSE on VPSS chn0 is required for wrap mode. */
+    stChnAttr.bMirror          = g_board_cfg->default_mirror;
+    stChnAttr.bFlip            = g_board_cfg->default_flip;
     stChnAttr.u32Depth         = 0;
     stChnAttr.stFrameRate.s32SrcFrameRate = -1;
     stChnAttr.stFrameRate.s32DstFrameRate = -1;
@@ -1266,10 +1268,10 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     stChnAttr.enCompressMode          = COMPRESS_MODE_NONE;
     stChnAttr.stFrameRate.s32SrcFrameRate = -1;
     stChnAttr.stFrameRate.s32DstFrameRate = -1;
-    /* Base orientation from board (sensor mounting), XOR'd with user config.
-       Both HI_BOOL and options->mirror/flip are int-compatible for XOR. */
-    stChnAttr.bMirror = g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror;
-    stChnAttr.bFlip   = g_board_cfg->default_flip   ^ (HI_BOOL)options->flip;
+    /* Board correction is at VI level; VPSS carries only the user-requested XOR.
+       This keeps bMirror/bFlip=0 on chn0 by default, required for wrap mode. */
+    stChnAttr.bMirror = (HI_BOOL)options->mirror;
+    stChnAttr.bFlip   = (HI_BOOL)options->flip;
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
@@ -1343,9 +1345,9 @@ int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         return LOCALSDK_ERROR;
     }
 
-    /* Base 180° correction (sensor mounted rotated) XOR user flip/mirror. */
-    stChnAttr.bMirror = options->mirror ? HI_FALSE : HI_TRUE;
-    stChnAttr.bFlip   = options->flip   ? HI_FALSE : HI_TRUE;
+    /* Board correction is at VI level; VPSS carries only the user-requested XOR. */
+    stChnAttr.bMirror = (HI_BOOL)options->mirror;
+    stChnAttr.bFlip   = (HI_BOOL)options->flip;
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
