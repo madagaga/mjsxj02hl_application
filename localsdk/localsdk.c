@@ -788,7 +788,9 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn, LOCALSDK_VIDEO_OPTION
     }
 
     if (!jpeg) {
-        result = HI_MPI_VENC_StartRecvFrame(vencChn, NULL);
+        VENC_RECV_PIC_PARAM_S stRecvParam;
+        stRecvParam.s32RecvPicNum = -1; /* receive frames continuously */
+        result = HI_MPI_VENC_StartRecvFrame(vencChn, &stRecvParam);
         if (result != HI_SUCCESS) {
             sdk_log("[sdk][video] HI_MPI_VENC_StartRecvFrame(%d) failed: 0x%x\n", vencChn, result);
             HI_MPI_VENC_DestroyChn(vencChn);
