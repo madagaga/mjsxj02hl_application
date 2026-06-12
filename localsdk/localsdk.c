@@ -1277,14 +1277,6 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
-    /* Initialise the sceneauto library now that the ISP pipeline is up. It must
-       be initialised before any sceneauto_resume()/cut_night_mode() call (used
-       by the night subsystem), otherwise HI_SCENE_SetSceneMode logs
-       "please init sceneauto first!" and night_init fails. */
-    if (sceneauto_init() != 0) {
-        sdk_log("[sdk][video] sceneauto_init() failed (non-fatal)\n");
-    }
-
     sdk_log("[sdk][video] Video init complete\n");
     return LOCALSDK_OK;
 }
@@ -2747,7 +2739,19 @@ int local_sdk_video_set_night_mode() {
 }
 
 int local_sdk_auto_night_light() {
-    return sceneauto_resume();
+    /* sceneauto (vendor libsceneauto.so) drives auto day/night ISP switching.
+       Initialise it lazily here, when the whole pipeline is streaming. If it
+       cannot start, degrade gracefully (no auto scene switching) rather than
+       aborting app init -- this vendor dependency is slated for rewrite. */
+    if (sceneauto_init() != 0) {
+        sdk_log("[sdk][night] sceneauto_init failed; auto night switching disabled (degraded)\n");
+        return LOCALSDK_OK;
+    }
+    if (sceneauto_resume() != 0) {
+        sdk_log("[sdk][night] sceneauto_resume failed; auto night switching disabled (degraded)\n");
+        return LOCALSDK_OK;
+    }
+    return LOCALSDK_OK;
 }
 
 /**
