@@ -1046,30 +1046,6 @@ static uint32_t sdk_calc_yuv420_blk_size(uint32_t width, uint32_t height) {
     return (w * h * 3) / 2;
 }
 
-static int sdk_video_pinmux_jxf22(void) {
-    /* Pinmux + clock setup derived from OpenIPC insert_sns() */
-    const char *cmds[] = {
-        "devmem 0x200f0040 32 0x2", /* I2C0_SCL */
-        "devmem 0x200f0044 32 0x2", /* I2C0_SDA */
-        "devmem 0x200f007c 32 0x1", /* VI_DATA13 */
-        "devmem 0x200f0080 32 0x1", /* VI_DATA10 */
-        "devmem 0x200f0084 32 0x1", /* VI_DATA12 */
-        "devmem 0x200f0088 32 0x1", /* VI_DATA11 */
-        "devmem 0x200f008c 32 0x2", /* VI_VS */
-        "devmem 0x200f0090 32 0x2", /* VI_HS */
-        "devmem 0x200f0094 32 0x1", /* VI_DATA9 */
-        "devmem 0x2003002c 32 0xb4001" /* clk 27MHz, VI 99MHz */
-    };
-
-    for (size_t i = 0; i < (sizeof(cmds) / sizeof(cmds[0])); i++) {
-        if (sdk_exec_shell(cmds[i]) != SDK_SUCCESS) {
-            sdk_log("[sdk][video] pinmux cmd failed or shell callback missing: %s\n", cmds[i]);
-            return LOCALSDK_ERROR;
-        }
-    }
-    return LOCALSDK_OK;
-}
-
 static void *sdk_isp_thread(void *arg) {
     (void)arg;
     HI_MPI_ISP_Run(0);
@@ -1170,10 +1146,12 @@ static int sdk_video_isp_init_minimal(int fps) {
 static int sdk_video_vi_isp_init_f22(int fps) {
     int32_t result;
 
-    if (sdk_video_pinmux_jxf22() != LOCALSDK_OK) {
-        sdk_log("[sdk][video] Pinmux/clock setup failed\n");
-        return LOCALSDK_ERROR;
-    }
+    /* No manual pinmux/clock setup here. The VI/MIPI pinmux, sensor clocks and
+       all MPP kernel modules are configured at boot by the Hisi driver loader
+       ("/usr/app/drv/load3518ev300 -i -sensor0 f22"), and the original
+       liblocalsdk.so does not touch these registers either. (The earlier
+       devmem approach also used the wrong IO-config base for this SoC -- this
+       chip muxes at 0x112Cxxxx, not 0x200f0000 -- which bus-errored.) */
 
     /* Order matters: bring up MIPI + VI dev/pipe/chn FIRST, then ISP. The ISP
        attaches to the VI pipe, and the sensor i2c writes (cmos/soi_sensor_init)
