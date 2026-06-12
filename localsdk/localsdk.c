@@ -57,14 +57,9 @@
 
 #include "hi_sns_ctrl.h"
 
-/* HI_MPI_VB_SetConfig is the renamed SetConf in this SDK version */
-extern HI_S32 HI_MPI_VB_SetConfig(const VB_CONF_S *pstVbConf);
-
-/* sceneauto library */
-extern int sceneauto_cut_night_mode(int mode);
-extern int sceneauto_resume(void);
-extern int sceneauto_pause(void);
-extern int sceneauto_init(void);
+/* SOI F22 sensor object exported by libsns_f22.so (not declared in the stock
+   3516e hi_sns_ctrl.h, which only lists Hisilicon reference sensors). */
+extern ISP_SNS_OBJ_S stSnsSoiSensorObj;
 
 /* sceneauto library — handles ISP scene switching and auto night mode */
 extern int sceneauto_cut_night_mode(int mode);
@@ -81,6 +76,7 @@ static VPSS_GRP g_vpssGrp = 0;
 static VPSS_CHN g_vpssChn[4] = {0, 1, 2, 3};
 static VENC_CHN g_vencChn[2] = {0, 1};
 static VI_DEV   g_viDev = 0;
+static VI_PIPE  g_viPipe = 0;
 static VI_CHN   g_viChn = 0;
 static int32_t  g_videoStarted[2] = {0, 0};
 
@@ -490,11 +486,11 @@ int localsdk_set_shellcall_func(int (*callback)(const char *)) {
  */
 int localsdk_init() {
     puts("----------------------------------------");
-    puts("    WELCOME TO LOCALSDK      ('_)')");
+    puts("    OPEN LOCALSDK (oss)        ('_)')");
     puts("----------------------------------------");
     puts("    platform: hi3518ev300 ");
-    printf("    version : %s \n", "HI_SDK20190315");
-    printf("    update  : %s (%s) \n", "Apr 12 2021", "18:16:49");
+    printf("    sdk ver : %d \n", SDK_VERSION);
+    printf("    build   : %s (%s) \n", __DATE__, __TIME__);
     puts("----------------------------------------");
 
     platform_callback_mutex_init();
@@ -539,7 +535,9 @@ int localsdk_destory() {
     sdk_video_unbind_vi_vpss();
     HI_MPI_VPSS_StopGrp(g_vpssGrp);
     HI_MPI_VPSS_DestroyGrp(g_vpssGrp);
-    HI_MPI_VI_DisableChn(g_viChn);
+    HI_MPI_VI_DisableChn(g_viPipe, g_viChn);
+    HI_MPI_VI_StopPipe(g_viPipe);
+    HI_MPI_VI_DestroyPipe(g_viPipe);
     HI_MPI_VI_DisableDev(g_viDev);
     HI_MPI_SYS_Exit();
     HI_MPI_VB_Exit();
@@ -674,7 +672,7 @@ static int sdk_video_unbind_vi_vpss(void) {
     memset(&stDestChn, 0, sizeof(stDestChn));
 
     stSrcChn.enModId = HI_ID_VIU;
-    stSrcChn.s32DevId = 0;
+    stSrcChn.s32DevId = g_viPipe;
     stSrcChn.s32ChnId = g_viChn;
 
     stDestChn.enModId = HI_ID_VPSS;
@@ -811,36 +809,144 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn, LOCALSDK_VIDEO_OPTION
     return LOCALSDK_OK;
 }
 
-static int sdk_video_mipi_init_f22(void) {
-    combo_dev_attr_t stComboAttr;
-    int fd;
+/* ----------------------------------------------------------------------------
+   JXF22 (SOI F22) sensor attributes — values captured from the original
+   liblocalsdk.so runtime trace (trace.txt) and cross-checked against the
+   3516ev200 sample (DEV_ATTR_SC2231 / PIPE_ATTR_1920x1080_RAW10). The camera
+   uses 2-lane MIPI, RAW10, 1080p30 linear, VI online -> VPSS offline.
+   ---------------------------------------------------------------------------- */
+static const combo_dev_attr_t MIPI_ATTR_JXF22 = {
+    .devno      = 0,
+    .input_mode = INPUT_MODE_MIPI,
+    .data_rate  = MIPI_DATA_RATE_X1,
+    .img_rect   = {0, 0, 1920, 1080},
+    .mipi_attr  = {
+        DATA_TYPE_RAW_10BIT,
+        HI_MIPI_WDR_MODE_NONE,
+        {0, 2, -1, -1}
+    }
+};
 
-    memset(&stComboAttr, 0, sizeof(stComboAttr));
-    stComboAttr.input_mode              = INPUT_MODE_MIPI;
-    stComboAttr.mipi_attr.raw_data_type = RAW_DATA_10BIT;
-    stComboAttr.mipi_attr.lane_id[0]    = 0;
-    stComboAttr.mipi_attr.lane_id[1]    = 2;
-    stComboAttr.mipi_attr.lane_id[2]    = -1;
-    stComboAttr.mipi_attr.lane_id[3]    = -1;
+static const VI_DEV_ATTR_S DEV_ATTR_JXF22 = {
+    VI_MODE_MIPI,
+    VI_WORK_MODE_1Multiplex,
+    {0xFFC00000, 0x0},
+    VI_SCAN_PROGRESSIVE,
+    { -1, -1, -1, -1},
+    VI_DATA_SEQ_YUYV,
+    {
+        VI_VSYNC_PULSE, VI_VSYNC_NEG_LOW, VI_HSYNC_VALID_SINGNAL, VI_HSYNC_NEG_HIGH, VI_VSYNC_VALID_SINGAL, VI_VSYNC_VALID_NEG_HIGH,
+        {
+            0, 1920, 0,
+            0, 1080, 0,
+            0, 0,    0
+        }
+    },
+    VI_DATA_TYPE_RGB,
+    HI_FALSE,
+    {1920, 1080},
+    {
+        { {1920, 1080} },
+        { VI_REPHASE_MODE_NONE, VI_REPHASE_MODE_NONE }
+    },
+    {
+        WDR_MODE_NONE,
+        1080
+    },
+    DATA_RATE_X1
+};
+
+static const VI_PIPE_ATTR_S PIPE_ATTR_JXF22 = {
+    VI_PIPE_BYPASS_NONE, HI_FALSE, HI_FALSE,
+    1920, 1080,
+    PIXEL_FORMAT_RGB_BAYER_10BPP,
+    COMPRESS_MODE_NONE,
+    DATA_BITWIDTH_10,
+    HI_TRUE,
+    {
+        PIXEL_FORMAT_YVU_SEMIPLANAR_420,
+        DATA_BITWIDTH_8,
+        VI_NR_REF_FROM_RFR,
+        COMPRESS_MODE_NONE
+    },
+    HI_FALSE,
+    { -1, -1 }
+};
+
+/* MIPI bring-up sequence, ported faithfully from SAMPLE_COMM_VI_StartMIPI:
+   HsMode -> EnableMipiClock -> ResetMipi -> EnableSensorClock -> ResetSensor
+   -> SetDevAttr -> UnresetMipi -> UnresetSensor. */
+static int sdk_video_mipi_init_f22(void) {
+    int fd;
+    lane_divide_mode_t hsMode = LANE_DIVIDE_MODE_0;
+    combo_dev_t  devno  = 0;
+    sns_clk_source_t snsClk = 0;
+    sns_rst_source_t snsRst = 0;
+    combo_dev_attr_t stComboAttr;
 
     fd = open("/dev/hi_mipi", O_RDWR);
     if (fd < 0) {
-        sdk_log("[sdk][video] warning: open /dev/hi_mipi failed\n");
-        return LOCALSDK_OK; /* non-fatal in some environments */
+        sdk_log("[sdk][video] open /dev/hi_mipi failed\n");
+        return LOCALSDK_ERROR;
     }
 
+    if (ioctl(fd, HI_MIPI_SET_HS_MODE, &hsMode) != 0) {
+        sdk_log("[sdk][video] HI_MIPI_SET_HS_MODE failed\n");
+        close(fd);
+        return LOCALSDK_ERROR;
+    }
+    if (ioctl(fd, HI_MIPI_ENABLE_MIPI_CLOCK, &devno) != 0) {
+        sdk_log("[sdk][video] HI_MIPI_ENABLE_MIPI_CLOCK failed\n");
+        close(fd);
+        return LOCALSDK_ERROR;
+    }
+    if (ioctl(fd, HI_MIPI_RESET_MIPI, &devno) != 0) {
+        sdk_log("[sdk][video] HI_MIPI_RESET_MIPI failed\n");
+        close(fd);
+        return LOCALSDK_ERROR;
+    }
+    if (ioctl(fd, HI_MIPI_ENABLE_SENSOR_CLOCK, &snsClk) != 0) {
+        sdk_log("[sdk][video] HI_MIPI_ENABLE_SENSOR_CLOCK failed\n");
+        close(fd);
+        return LOCALSDK_ERROR;
+    }
+    if (ioctl(fd, HI_MIPI_RESET_SENSOR, &snsRst) != 0) {
+        sdk_log("[sdk][video] HI_MIPI_RESET_SENSOR failed\n");
+        close(fd);
+        return LOCALSDK_ERROR;
+    }
+
+    memcpy(&stComboAttr, &MIPI_ATTR_JXF22, sizeof(stComboAttr));
+    stComboAttr.devno = 0;
     if (ioctl(fd, HI_MIPI_SET_DEV_ATTR, &stComboAttr) != 0) {
         sdk_log("[sdk][video] HI_MIPI_SET_DEV_ATTR failed\n");
         close(fd);
         return LOCALSDK_ERROR;
     }
+
+    if (ioctl(fd, HI_MIPI_UNRESET_MIPI, &devno) != 0) {
+        sdk_log("[sdk][video] HI_MIPI_UNRESET_MIPI failed\n");
+        close(fd);
+        return LOCALSDK_ERROR;
+    }
+    if (ioctl(fd, HI_MIPI_UNRESET_SENSOR, &snsRst) != 0) {
+        sdk_log("[sdk][video] HI_MIPI_UNRESET_SENSOR failed\n");
+        close(fd);
+        return LOCALSDK_ERROR;
+    }
+
     close(fd);
     return LOCALSDK_OK;
 }
 
+/* VI bring-up in the pipeline model (matches libmpi.so exports):
+   SetDevAttr -> EnableDev -> SetDevBindPipe -> CreatePipe -> StartPipe
+   -> SetChnAttr -> EnableChn. */
 static int sdk_video_vi_start_f22(void) {
-    VI_DEV_ATTR_S stViDevAttr;
-    VI_CHN_ATTR_S stChnAttr;
+    VI_DEV_ATTR_S      stViDevAttr;
+    VI_PIPE_ATTR_S     stPipeAttr;
+    VI_CHN_ATTR_S      stChnAttr;
+    VI_DEV_BIND_PIPE_S stDevBindPipe;
     HI_S32 result;
 
     /* Configure MIPI first */
@@ -849,77 +955,74 @@ static int sdk_video_vi_start_f22(void) {
         return LOCALSDK_ERROR;
     }
 
-    memset(&stViDevAttr, 0, sizeof(stViDevAttr));
-    stViDevAttr.enIntfMode = VI_MODE_MIPI;         /* 6, from trace */
-    stViDevAttr.enWorkMode = VI_WORK_MODE_1Multiplex;
-    stViDevAttr.au32CompMask[0] = 0xFFC00000;      /* from trace: -4194304 */
-    stViDevAttr.au32CompMask[1] = 0x0;
-    stViDevAttr.enScanMode = VI_SCAN_PROGRESSIVE;
-    stViDevAttr.s32AdChnId[0] = -1;
-    stViDevAttr.s32AdChnId[1] = -1;
-    stViDevAttr.s32AdChnId[2] = -1;
-    stViDevAttr.s32AdChnId[3] = -1;
-    stViDevAttr.enDataSeq = VI_INPUT_DATA_YUYV;
-    stViDevAttr.stSynCfg.enVsync = VI_VSYNC_PULSE;
-    stViDevAttr.stSynCfg.enVsyncNeg = VI_VSYNC_NEG_HIGH;
-    stViDevAttr.stSynCfg.enHsync = VI_HSYNC_VALID_SINGNAL;
-    stViDevAttr.stSynCfg.enHsyncNeg = VI_HSYNC_NEG_HIGH;
-    stViDevAttr.stSynCfg.enVsyncValid = VI_VSYNC_VALID_SINGAL;
-    stViDevAttr.stSynCfg.enVsyncValidNeg = VI_VSYNC_VALID_NEG_HIGH;
-    stViDevAttr.stSynCfg.stTimingBlank.u32HsyncHfb = 0;
-    stViDevAttr.stSynCfg.stTimingBlank.u32HsyncAct = 1920;
-    stViDevAttr.stSynCfg.stTimingBlank.u32HsyncHbb = 0;
-    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVfb = 0;
-    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVact = 1080;
-    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVbb = 0;
-    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVbfb = 0;
-    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVbact = 0;
-    stViDevAttr.stSynCfg.stTimingBlank.u32VsyncVbbb = 0;
-    stViDevAttr.enDataPath = VI_PATH_ISP;
-    stViDevAttr.enInputDataType = VI_DATA_TYPE_RGB;
-    stViDevAttr.bDataRev = HI_FALSE;
-    stViDevAttr.stDevRect.s32X = 0;
-    stViDevAttr.stDevRect.s32Y = 0;
-    stViDevAttr.stDevRect.u32Width = 1920;
-    stViDevAttr.stDevRect.u32Height = 1080;
-
+    /* --- VI device --- */
+    memcpy(&stViDevAttr, &DEV_ATTR_JXF22, sizeof(stViDevAttr));
     result = HI_MPI_VI_SetDevAttr(g_viDev, &stViDevAttr);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] HI_MPI_VI_SetDevAttr failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-
     result = HI_MPI_VI_EnableDev(g_viDev);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] HI_MPI_VI_EnableDev failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
 
-    memset(&stChnAttr, 0, sizeof(stChnAttr));
-    stChnAttr.stCapRect.s32X = 0;
-    stChnAttr.stCapRect.s32Y = 0;
-    stChnAttr.stCapRect.u32Width = 1920;
-    stChnAttr.stCapRect.u32Height = 1080;
-    stChnAttr.stDestSize.u32Width = 1920;
-    stChnAttr.stDestSize.u32Height = 1080;
-    stChnAttr.enCapSel = VI_CAPSEL_BOTH;
-    stChnAttr.enPixFormat = PIXEL_FORMAT_YUV_SEMIPLANAR_420;
-    stChnAttr.bMirror = HI_FALSE;
-    stChnAttr.bFlip = HI_FALSE;
-    stChnAttr.s32SrcFrameRate = -1;
-    stChnAttr.s32DstFrameRate = -1;
-    stChnAttr.enCompressMode = COMPRESS_MODE_NONE;
-
-    result = HI_MPI_VI_SetChnAttr(g_viChn, &stChnAttr);
+    /* --- bind dev -> pipe --- */
+    memset(&stDevBindPipe, 0, sizeof(stDevBindPipe));
+    stDevBindPipe.u32Num     = 1;
+    stDevBindPipe.PipeId[0]  = g_viPipe;
+    result = HI_MPI_VI_SetDevBindPipe(g_viDev, &stDevBindPipe);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] HI_MPI_VI_SetChnAttr failed: 0x%x\n", result);
+        sdk_log("[sdk][video] HI_MPI_VI_SetDevBindPipe failed: 0x%x\n", result);
         HI_MPI_VI_DisableDev(g_viDev);
         return LOCALSDK_ERROR;
     }
 
-    result = HI_MPI_VI_EnableChn(g_viChn);
+    /* --- VI pipe --- */
+    memcpy(&stPipeAttr, &PIPE_ATTR_JXF22, sizeof(stPipeAttr));
+    result = HI_MPI_VI_CreatePipe(g_viPipe, &stPipeAttr);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] HI_MPI_VI_CreatePipe failed: 0x%x\n", result);
+        HI_MPI_VI_DisableDev(g_viDev);
+        return LOCALSDK_ERROR;
+    }
+    result = HI_MPI_VI_StartPipe(g_viPipe);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] HI_MPI_VI_StartPipe failed: 0x%x\n", result);
+        HI_MPI_VI_DestroyPipe(g_viPipe);
+        HI_MPI_VI_DisableDev(g_viDev);
+        return LOCALSDK_ERROR;
+    }
+
+    /* --- VI physical channel --- */
+    memset(&stChnAttr, 0, sizeof(stChnAttr));
+    stChnAttr.stSize.u32Width  = 1920;
+    stChnAttr.stSize.u32Height = 1080;
+    stChnAttr.enPixelFormat    = PIXEL_FORMAT_YVU_SEMIPLANAR_420;
+    stChnAttr.enDynamicRange   = DYNAMIC_RANGE_SDR8;
+    stChnAttr.enVideoFormat    = VIDEO_FORMAT_LINEAR;
+    stChnAttr.enCompressMode   = COMPRESS_MODE_NONE;
+    stChnAttr.bMirror          = HI_FALSE;
+    stChnAttr.bFlip            = HI_FALSE;
+    stChnAttr.u32Depth         = 0;
+    stChnAttr.stFrameRate.s32SrcFrameRate = -1;
+    stChnAttr.stFrameRate.s32DstFrameRate = -1;
+
+    result = HI_MPI_VI_SetChnAttr(g_viPipe, g_viChn, &stChnAttr);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] HI_MPI_VI_SetChnAttr failed: 0x%x\n", result);
+        HI_MPI_VI_StopPipe(g_viPipe);
+        HI_MPI_VI_DestroyPipe(g_viPipe);
+        HI_MPI_VI_DisableDev(g_viDev);
+        return LOCALSDK_ERROR;
+    }
+
+    result = HI_MPI_VI_EnableChn(g_viPipe, g_viChn);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] HI_MPI_VI_EnableChn failed: 0x%x\n", result);
+        HI_MPI_VI_StopPipe(g_viPipe);
+        HI_MPI_VI_DestroyPipe(g_viPipe);
         HI_MPI_VI_DisableDev(g_viDev);
         return LOCALSDK_ERROR;
     }
@@ -935,7 +1038,7 @@ static int sdk_video_bind_vi_vpss(void) {
     memset(&stDestChn, 0, sizeof(stDestChn));
 
     stSrcChn.enModId = HI_ID_VIU;
-    stSrcChn.s32DevId = 0;
+    stSrcChn.s32DevId = g_viPipe;
     stSrcChn.s32ChnId = g_viChn;
 
     stDestChn.enModId = HI_ID_VPSS;
@@ -1052,8 +1155,13 @@ static int sdk_video_isp_init_minimal(int fps) {
     stPubAttr.stWndRect.s32Y = 0;
     stPubAttr.stWndRect.u32Width = 1920;
     stPubAttr.stWndRect.u32Height = 1080;
-    stPubAttr.f32FrameRate = (HI_FLOAT)fps;
+    stPubAttr.stSnsSize.u32Width = 1920;
+    stPubAttr.stSnsSize.u32Height = 1080;
+    stPubAttr.f32FrameRate = 30.0f;       /* sensor native 1080p30; app retimes to 20 later */
     stPubAttr.enBayer = BAYER_BGGR;
+    stPubAttr.enWDRMode = WDR_MODE_NONE;
+    stPubAttr.u8SnsMode = 0;
+    (void)fps;
 
     result = HI_MPI_ISP_SetPubAttr(0, &stPubAttr);
     if (result != HI_SUCCESS) {
@@ -1083,21 +1191,21 @@ static int sdk_video_vi_isp_init_f22(int fps) {
         return LOCALSDK_ERROR;
     }
 
-    result = sdk_video_isp_init_minimal(fps);
-    if (result != LOCALSDK_OK) {
-        sdk_log("[sdk][video] Minimal ISP init failed\n");
-        return LOCALSDK_ERROR;
-    }
-
+    /* Order matters: bring up MIPI + VI dev/pipe/chn FIRST, then ISP. The ISP
+       attaches to the VI pipe, and the sensor i2c writes (cmos/soi_sensor_init)
+       happen during ISP init using the sensor clock enabled by MIPI bring-up. */
     result = sdk_video_vi_start_f22();
     if (result != LOCALSDK_OK) {
         sdk_log("[sdk][video] VI start failed\n");
         return LOCALSDK_ERROR;
     }
 
-    /* TODO:
-       - Import MIPI combo attributes for JXF22 (e.g. MIPI_*_JXF22_*).
-       - Replace minimal VI timing with exact sensor-specific values if needed. */
+    result = sdk_video_isp_init_minimal(fps);
+    if (result != LOCALSDK_OK) {
+        sdk_log("[sdk][video] Minimal ISP init failed\n");
+        return LOCALSDK_ERROR;
+    }
+
     return LOCALSDK_OK;
 }
 
@@ -1107,8 +1215,8 @@ static int sdk_video_vi_isp_init_f22(int fps) {
 int local_sdk_video_init(int fps) {
     int32_t result;
     VPSS_GRP_ATTR_S stGrpAttr;
-    MPP_SYS_CONF_S stSysConf;
-    VB_CONF_S stVbConf;
+    VB_CONFIG_S stVbConf;
+    VI_VPSS_MODE_S stVIVPSSMode;
 
     sdk_log("[sdk][video] Initializing video (fps=%d)\n", fps);
     if (fps <= 0 || fps > 30) {
@@ -1116,13 +1224,18 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
-    /* Basic SYS/VB init */
+    /* VB pools (newer SDK layout: 64-bit u64BlkSize).
+       Pool 0: RAW 3DNR reference frame for the VI pipe (1920x1088, 16bpp).
+       Pool 1: main YUV420 1080p (VPSS chn0 / VENC).
+       Pool 2: sub YUV420 640x360 (VPSS chn1 / VENC). */
     memset(&stVbConf, 0, sizeof(stVbConf));
-    stVbConf.u32MaxPoolCnt = 2;
-    stVbConf.astCommPool[0].u32BlkSize = sdk_calc_yuv420_blk_size(1920, 1080);
-    stVbConf.astCommPool[0].u32BlkCnt = 6;
-    stVbConf.astCommPool[1].u32BlkSize = sdk_calc_yuv420_blk_size(640, 360);
-    stVbConf.astCommPool[1].u32BlkCnt = 6;
+    stVbConf.u32MaxPoolCnt = 3;
+    stVbConf.astCommPool[0].u64BlkSize = (HI_U64)sdk_align_up(1920, 64) * sdk_align_up(1080, 64) * 2;
+    stVbConf.astCommPool[0].u32BlkCnt  = 3;
+    stVbConf.astCommPool[1].u64BlkSize = sdk_calc_yuv420_blk_size(1920, 1080);
+    stVbConf.astCommPool[1].u32BlkCnt  = 4;
+    stVbConf.astCommPool[2].u64BlkSize = sdk_calc_yuv420_blk_size(640, 360);
+    stVbConf.astCommPool[2].u32BlkCnt  = 4;
 
     HI_MPI_SYS_Exit();
     HI_MPI_VB_Exit();
@@ -1144,6 +1257,17 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
+    /* VI-VPSS working mode: VI online -> VPSS offline (SoC default, matches the
+       original liblocalsdk.so). Must be set before creating the VI pipe. */
+    memset(&stVIVPSSMode, 0, sizeof(stVIVPSSMode));
+    HI_MPI_SYS_GetVIVPSSMode(&stVIVPSSMode);
+    stVIVPSSMode.aenMode[0] = VI_ONLINE_VPSS_OFFLINE;
+    result = HI_MPI_SYS_SetVIVPSSMode(&stVIVPSSMode);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] HI_MPI_SYS_SetVIVPSSMode failed: 0x%x\n", result);
+        return LOCALSDK_ERROR;
+    }
+
     /* VI/ISP (sensor f22) */
     result = sdk_video_vi_isp_init_f22(fps);
     if (result != LOCALSDK_OK) {
@@ -1153,14 +1277,16 @@ int local_sdk_video_init(int fps) {
 
     /* VPSS group */
     memset(&stGrpAttr, 0, sizeof(VPSS_GRP_ATTR_S));
-    stGrpAttr.enPixFmt  = PIXEL_FORMAT_YUV_SEMIPLANAR_420;
-    stGrpAttr.u32MaxW   = 1920;
-    stGrpAttr.u32MaxH   = 1080;
-    stGrpAttr.bNrEn     = HI_TRUE;
-    stGrpAttr.bIeEn     = HI_FALSE;
-    stGrpAttr.bDciEn    = HI_FALSE;
-    stGrpAttr.bHistEn   = HI_FALSE;
-    stGrpAttr.enDieMode = VPSS_DIE_MODE_NODIE;
+    stGrpAttr.u32MaxW                     = 1920;
+    stGrpAttr.u32MaxH                     = 1080;
+    stGrpAttr.enPixelFormat               = PIXEL_FORMAT_YVU_SEMIPLANAR_420;
+    stGrpAttr.enDynamicRange              = DYNAMIC_RANGE_SDR8;
+    stGrpAttr.stFrameRate.s32SrcFrameRate = -1;
+    stGrpAttr.stFrameRate.s32DstFrameRate = -1;
+    stGrpAttr.bNrEn                       = HI_TRUE;
+    stGrpAttr.stNrAttr.enNrType           = VPSS_NR_TYPE_VIDEO;
+    stGrpAttr.stNrAttr.enCompressMode     = COMPRESS_MODE_NONE;
+    stGrpAttr.stNrAttr.enNrMotionMode     = NR_MOTION_MODE_NORMAL;
 
     result = HI_MPI_VPSS_CreateGrp(g_vpssGrp, &stGrpAttr);
     if (result != HI_SUCCESS) {

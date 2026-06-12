@@ -19,7 +19,7 @@ LIBDIR = ./lib
 all: mkdirs mjsxj02hl
 
 mjsxj02hl: ./mjsxj02hl.c external-libs objects
-	$(CC) $(CCFLAGS) -L$(LDPATH) ./mjsxj02hl.c $(OUTPUT)/objects/*.o $(OUTPUT)/objects/*.a $(LDFLAGS) -o $(OUTPUT)/mjsxj02hl
+	$(CC) $(CCFLAGS) -L$(LDPATH) ./mjsxj02hl.c $(OUTPUT)/objects/*.o $(OUTPUT)/objects/*.a -o $(OUTPUT)/mjsxj02hl $(LDFLAGS)
 
 ##############
 # PVS-STUDIO #
