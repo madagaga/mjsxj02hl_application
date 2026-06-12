@@ -1215,13 +1215,11 @@ int local_sdk_video_init(int fps) {
     stGrpAttr.enDynamicRange              = DYNAMIC_RANGE_SDR8;
     stGrpAttr.stFrameRate.s32SrcFrameRate = -1;
     stGrpAttr.stFrameRate.s32DstFrameRate = -1;
-    /* 3DNR: enabled now that the main VB pool uses wrap mode (~1.2 MB ring buffer
-       instead of ~3 MB full frames), leaving enough contiguous MMZ for the NR
-       reference frame and VENC buffers. */
-    stGrpAttr.bNrEn                        = HI_TRUE;
-    stGrpAttr.stNrAttr.enNrType            = VPSS_NR_TYPE_VIDEO;
-    stGrpAttr.stNrAttr.enNrMotionMode      = NR_MOTION_MODE_NORMAL;
-    stGrpAttr.stNrAttr.enCompressMode      = COMPRESS_MODE_FRAME;
+    /* VPSS-level NR disabled: the original firmware uses VI-pipe-level 3DNR
+       (VI_PIPE_ATTR_S.bNrEn = HI_TRUE with VI_NR_REF_FROM_RFR, set in
+       sensor_jxf22.c), not VPSS NR.  Enabling VPSS bNrEn conflicts with
+       wrap mode on this SoC (causes SetChnBufWrapAttr ILLEGAL_PARAM). */
+    stGrpAttr.bNrEn                        = HI_FALSE;
 
     result = HI_MPI_VPSS_CreateGrp(g_vpssGrp, &stGrpAttr);
     if (result != HI_SUCCESS) {
