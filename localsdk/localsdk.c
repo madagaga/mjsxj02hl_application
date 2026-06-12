@@ -2258,10 +2258,12 @@ int local_sdk_speaker_init() {
 
     sdk_log("[sdk][speaker] Initializing speaker (ADEC)\n");
     
+    /* pValue must point to a protocol attr (G711); NULL -> ADEC NULL_PTR. */
+    static ADEC_ATTR_G711_S stAdecG711;
     stAdecAttr.enType = PT_G711A;
     stAdecAttr.u32BufSize = 20;
     stAdecAttr.enMode = ADEC_MODE_STREAM;
-    stAdecAttr.pValue = NULL;
+    stAdecAttr.pValue = &stAdecG711;
 
     result = HI_MPI_ADEC_CreateChn(g_adecChn, &stAdecAttr);
     if (result != HI_SUCCESS && result != HI_ERR_ADEC_EXIST) {
