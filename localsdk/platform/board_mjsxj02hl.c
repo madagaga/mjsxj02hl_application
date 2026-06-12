@@ -28,17 +28,14 @@ static const board_cfg_t g_board_mjsxj02hl = {
     .ai_dev = 0,
     .ao_dev = 0,
 
-    /* VB pool block counts.
-     * Main channel uses VPSS wrap mode (ring buffer limited to ~416 lines instead of
-     * a full 1080p frame), which frees ~4 MB and allows 3DNR NR reference frame to
-     * coexist with VENC buffers in the ~19 MB MMZ. cnt=1 sufficient for wrap. */
-    .vb_main_blk_cnt = 1,
+    /* VB pool block counts. cnt=2 for full-frame (pipeline overlap). */
+    .vb_main_blk_cnt = 2,
     .vb_sub_blk_cnt  = 5,
 
-    /* Wrap lines hardcoded to match original firmware (416 lines = 1,198,080 B).
-       GetVPSSVENCWrapBufferLine returns only 160 (minimum), which triggers
-       ILLEGAL_PARAM on this SoC; 416 gives the extra margin the HW requires. */
-    .vb_main_wrap_lines = 416,
+    /* Wrap disabled: VENC needs ring-buffer streaming config to consume a 416-line
+       ring; without it VENC never gets a complete frame signal from VPSS.
+       Full-frame VB restores normal operation; VPSS NR stays off (bNrEn=HI_FALSE). */
+    .vb_main_wrap_lines = 0,
 
     /* IVP model: must match sub-channel resolution (640x360) */
     .ivp_oms_path = "/usr/app/local/ivp_re_im_allday_16chn_pr1_640x360_v1040.oms",
