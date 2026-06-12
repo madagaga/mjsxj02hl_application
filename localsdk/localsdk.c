@@ -1197,9 +1197,9 @@ int local_sdk_video_init(int fps) {
     memset(&stVbConf, 0, sizeof(stVbConf));
     stVbConf.u32MaxPoolCnt = 2;
     stVbConf.astCommPool[0].u64BlkSize = sdk_calc_yuv420_blk_size(1920, 1080);
-    stVbConf.astCommPool[0].u32BlkCnt  = 3;
+    stVbConf.astCommPool[0].u32BlkCnt  = 2;
     stVbConf.astCommPool[1].u64BlkSize = sdk_calc_yuv420_blk_size(640, 360);
-    stVbConf.astCommPool[1].u32BlkCnt  = 3;
+    stVbConf.astCommPool[1].u32BlkCnt  = 2;
 
     HI_MPI_SYS_Exit();
     HI_MPI_VB_Exit();
