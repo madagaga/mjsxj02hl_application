@@ -1209,17 +1209,19 @@ int local_sdk_video_init(int fps) {
     }
 
     /* VB pools (newer SDK layout: 64-bit u64BlkSize).
-       Pool 0: RAW 3DNR reference frame for the VI pipe (1920x1088, 16bpp).
-       Pool 1: main YUV420 1080p (VPSS chn0 / VENC).
-       Pool 2: sub YUV420 640x360 (VPSS chn1 / VENC). */
+       The MMZ zone on this board is only ~19 MB (kernel mem=45M of 64 MB), so
+       the VB footprint must stay small. In VI_ONLINE_VPSS_OFFLINE the VI->VPSS
+       link is on-chip: VI needs no DDR raw pool, so we only allocate the YUV
+       output pools that VPSS writes and VENC reads. Counts are kept low to
+       leave MMZ headroom for VENC reference/reconstruction frames.
+       Pool 0: main YUV420 1080p (VPSS chn0 / VENC).
+       Pool 1: sub  YUV420 640x360 (VPSS chn1 / VENC). */
     memset(&stVbConf, 0, sizeof(stVbConf));
-    stVbConf.u32MaxPoolCnt = 3;
-    stVbConf.astCommPool[0].u64BlkSize = (HI_U64)sdk_align_up(1920, 64) * sdk_align_up(1080, 64) * 2;
+    stVbConf.u32MaxPoolCnt = 2;
+    stVbConf.astCommPool[0].u64BlkSize = sdk_calc_yuv420_blk_size(1920, 1080);
     stVbConf.astCommPool[0].u32BlkCnt  = 3;
-    stVbConf.astCommPool[1].u64BlkSize = sdk_calc_yuv420_blk_size(1920, 1080);
-    stVbConf.astCommPool[1].u32BlkCnt  = 4;
-    stVbConf.astCommPool[2].u64BlkSize = sdk_calc_yuv420_blk_size(640, 360);
-    stVbConf.astCommPool[2].u32BlkCnt  = 4;
+    stVbConf.astCommPool[1].u64BlkSize = sdk_calc_yuv420_blk_size(640, 360);
+    stVbConf.astCommPool[1].u32BlkCnt  = 3;
 
     HI_MPI_SYS_Exit();
     HI_MPI_VB_Exit();
