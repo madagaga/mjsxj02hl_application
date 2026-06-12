@@ -1137,13 +1137,10 @@ int local_sdk_video_init(int fps) {
         stWrap.stSmallStreamSize.u32Width  = 640;
         stWrap.stSmallStreamSize.u32Height = 360;
         if (g_board_cfg->vb_main_wrap_lines > 0) {
-            /* Board hardcodes wrap lines (original firmware value) — skip API. */
+            /* Board hardcodes wrap lines (original firmware value). */
             g_mainWrapBufLine = g_board_cfg->vb_main_wrap_lines;
-        } else if (HI_MPI_SYS_GetVPSSVENCWrapBufferLine(&stWrap, &g_mainWrapBufLine) != HI_SUCCESS
-                || g_mainWrapBufLine == 0) {
-            sdk_log("[sdk][video] wrap calc failed, falling back to full-frame VB\n");
-            g_mainWrapBufLine = 0;
         }
+        /* vb_main_wrap_lines=0: wrap disabled; g_mainWrapBufLine stays 0. */
         if (g_mainWrapBufLine > 0) {
             g_mainWrapBufSize = VPSS_GetWrapBufferSize(
                 stWrap.stLargeStreamSize.u32Width,
