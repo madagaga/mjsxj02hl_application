@@ -35,7 +35,8 @@ static const board_cfg_t g_board_mjsxj02hl = {
     /* Wrap mode: 416 lines matches original firmware (inner_GetWrapBufLine_By_SnsType).
        VB block size = VPSS_GetWrapBufferSize(1920, 1080, 416) ≈ 1.2 MB instead of 3 MB
        full-frame → saves ~3.8 MB of MMZ → room for VPSS 3DNR reference frame buffer.
-       SetChnBufWrapAttr now works because flip/mirror is at VI level (VPSS chn0 clean). */
+       Requires VI_ONLINE_VPSS_ONLINE; in OFFLINE mode wrap output reaches VENC silently
+       but VENC receives no frames. */
     .vb_main_wrap_lines = 416,
 
     /* IVP model: must match sub-channel resolution (640x360) */

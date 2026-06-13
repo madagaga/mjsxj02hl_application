@@ -1281,12 +1281,22 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         ? COMPRESS_MODE_SEG : COMPRESS_MODE_NONE;
     stChnAttr.stFrameRate.s32SrcFrameRate = -1;
     stChnAttr.stFrameRate.s32DstFrameRate = -1;
-    /* Board 180° correction XOR user-requested flip/mirror.
-       In VI_ONLINE_VPSS_ONLINE, VI is a pass-through so correction lives here.
-       In ONLINE mode SetChnBufWrapAttr accepts non-zero bMirror/bFlip (original
-       firmware used VPSS-level flip+mirror with wrap without issue). */
-    stChnAttr.bMirror = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
-    stChnAttr.bFlip   = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
+
+    {
+        HI_BOOL bEffectiveMirror = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
+        HI_BOOL bEffectiveFlip   = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
+        /* Board 180° correction XOR user-requested flip/mirror.
+           In VI_ONLINE_VPSS_ONLINE, VI is a pass-through so correction lives at VPSS level.
+           For chn0+wrap, SetChnBufWrapAttr returns ILLEGAL_PARAM if bMirror/bFlip are non-zero;
+           use SetChnRotation(ROTATION_180) after EnableChn instead. */
+        if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
+            stChnAttr.bMirror = HI_FALSE;
+            stChnAttr.bFlip   = HI_FALSE;
+        } else {
+            stChnAttr.bMirror = bEffectiveMirror;
+            stChnAttr.bFlip   = bEffectiveFlip;
+        }
+    }
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
@@ -1315,7 +1325,21 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         sdk_log("[sdk][video] Failed to enable channel: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
-    
+
+    /* For chn0+wrap: bMirror/bFlip were forced FALSE above; apply 180° rotation
+       via VGS (SetChnBufWrapAttr rejects non-zero bMirror/bFlip). */
+    if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
+        HI_BOOL bM = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
+        HI_BOOL bF = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
+        ROTATION_E enRot = (bM && bF) ? ROTATION_180 : ROTATION_0;
+        result = HI_MPI_VPSS_SetChnRotation(g_vpssGrp, g_vpssChn[chn], enRot);
+        if (result != HI_SUCCESS)
+            sdk_log("[sdk][video] SetChnRotation failed: 0x%x\n", result);
+        else
+            sdk_log("[sdk][video] SetChnRotation ok (%s)\n",
+                    enRot == ROTATION_180 ? "180" : "0");
+    }
+
     /* Store options in global state */
     memcpy(&g_videoParams[chn * 32], options, sizeof(LOCALSDK_VIDEO_OPTIONS));
 
@@ -1363,14 +1387,28 @@ int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         return LOCALSDK_ERROR;
     }
 
-    /* Board 180° correction XOR user-requested flip/mirror (same as create path). */
-    stChnAttr.bMirror = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
-    stChnAttr.bFlip   = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
+    {
+        HI_BOOL bM = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
+        HI_BOOL bF = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
+        /* For chn0+wrap, bMirror/bFlip must stay FALSE (same rule as create path). */
+        if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
+            stChnAttr.bMirror = HI_FALSE;
+            stChnAttr.bFlip   = HI_FALSE;
+        } else {
+            stChnAttr.bMirror = bM;
+            stChnAttr.bFlip   = bF;
+        }
 
-    result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] Failed to set channel attr: 0x%x\n", result);
-        return LOCALSDK_ERROR;
+        result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
+        if (result != HI_SUCCESS) {
+            sdk_log("[sdk][video] Failed to set channel attr: 0x%x\n", result);
+            return LOCALSDK_ERROR;
+        }
+
+        if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
+            ROTATION_E enRot = (bM && bF) ? ROTATION_180 : ROTATION_0;
+            HI_MPI_VPSS_SetChnRotation(g_vpssGrp, g_vpssChn[chn], enRot);
+        }
     }
 
     /* Update video parameters */
