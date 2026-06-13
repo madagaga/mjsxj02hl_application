@@ -1570,7 +1570,6 @@ int local_sdk_video_get_jpeg(int chn, char *file) {
     fd_set read_fds;
     struct timeval timeout;
     SIZE_S stSize;
-    LOCALSDK_VIDEO_OPTIONS *options;
     VENC_CHN snapChn = 3;
     
     if (chn < 0 || chn > 3 || !file) {
@@ -1579,10 +1578,13 @@ int local_sdk_video_get_jpeg(int chn, char *file) {
     }
     
     sdk_log("[sdk][video] Saving JPEG from channel %d to %s\n", chn, file);
-    
-    options = sdk_video_get_options(chn);
-    if (!options || sdk_video_resolution_to_size(options->resolution, &stSize) != LOCALSDK_OK) {
-        return LOCALSDK_ERROR;
+
+    /* Derive size from channel number: g_videoParams may be zeroed in the
+       --get-image subprocess (separate process, no localsdk_init). */
+    if (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) {
+        stSize.u32Width = 1920; stSize.u32Height = 1080;
+    } else {
+        stSize.u32Width = 640; stSize.u32Height = 360;
     }
 
     fp = fopen(file, "wb");
@@ -1591,8 +1593,26 @@ int local_sdk_video_get_jpeg(int chn, char *file) {
         return LOCALSDK_ERROR;
     }
 
-    result = sdk_video_create_venc_channel(snapChn, options, 1);
-    if (result != LOCALSDK_OK) {
+    /* Create JPEG VENC channel directly — only resolution matters for PT_JPEG */
+    {
+        VENC_CHN_ATTR_S stJpegAttr;
+        memset(&stJpegAttr, 0, sizeof(stJpegAttr));
+        stJpegAttr.stVencAttr.enType          = PT_JPEG;
+        stJpegAttr.stVencAttr.u32MaxPicWidth  = stSize.u32Width;
+        stJpegAttr.stVencAttr.u32MaxPicHeight = stSize.u32Height;
+        stJpegAttr.stVencAttr.u32PicWidth     = stSize.u32Width;
+        stJpegAttr.stVencAttr.u32PicHeight    = stSize.u32Height;
+        stJpegAttr.stVencAttr.u32BufSize      =
+            (((stSize.u32Width + 15) >> 4) << 4) * (((stSize.u32Height + 15) >> 4) << 4);
+        stJpegAttr.stVencAttr.bByFrame        = HI_TRUE;
+        stJpegAttr.stVencAttr.stAttrJpege.bSupportDCF   = HI_FALSE;
+        stJpegAttr.stVencAttr.stAttrJpege.enReceiveMode = VENC_PIC_RECEIVE_SINGLE;
+        stJpegAttr.stGopAttr.enGopMode = VENC_GOPMODE_NORMALP;
+        stJpegAttr.stGopAttr.stNormalP.s32IPQpDelta = 2;
+        result = HI_MPI_VENC_CreateChn(snapChn, &stJpegAttr);
+    }
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] HI_MPI_VENC_CreateChn(snap) failed: 0x%x\n", result);
         fclose(fp);
         return LOCALSDK_ERROR;
     }

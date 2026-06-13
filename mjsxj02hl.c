@@ -19,6 +19,7 @@
 #include "./configs/configs.h"
 #include "./mqtt/mqtt.h"
 #include "./rtsp/rtsp.h"
+#include "mpi_sys.h"
 
 // Signal callback
 void signal_callback(int signal) {
@@ -100,6 +101,9 @@ int main(int argc, char **argv) {
         } else if(strcmp(argv[1], "--get-image") == 0) { // Get image
             if(argc == 3) {
                 if(system("pidof -o %PPID mjsxj02hl > /dev/null") == EX_OK) {
+                    /* Connect this subprocess to the already-running MPP instance.
+                       Reference-counted: safe to call even if main process has it. */
+                    HI_MPI_SYS_Init();
                     int lock_fd = open("/tmp/mjsxj02hl_get_image.lock", O_CREAT | O_RDWR, 0666);
                     if(lock_fd < 0) {
                         printf("Error: unable to open snapshot lock file (errno=%d)\n", errno);
