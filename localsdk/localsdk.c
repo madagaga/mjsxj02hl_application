@@ -1221,9 +1221,13 @@ int local_sdk_video_init(int fps) {
     /* VPSS 3DNR enabled — matches original firmware.
        Requires wrap mode (vb_main_wrap_lines=416) to free ~3.8 MB of MMZ for the
        NR reference frame buffer.  SetChnBufWrapAttr no longer returns ILLEGAL_PARAM
-       because flip/mirror is now at VI level (VPSS chn0 bMirror=bFlip=FALSE). */
+       because flip/mirror is now at VI level (VPSS chn0 bMirror=bFlip=FALSE).
+       enCompressMode=COMPRESS_MODE_FRAME: reference frame compressed (YUV, whole frame)
+       as required by hi3516ev200 SDK sample (sample_venc.c line 573). */
     stGrpAttr.bNrEn                        = HI_TRUE;
     stGrpAttr.stNrAttr.enNrType            = VPSS_NR_TYPE_VIDEO;
+    stGrpAttr.stNrAttr.enCompressMode      = COMPRESS_MODE_FRAME;
+    stGrpAttr.stNrAttr.enNrMotionMode      = NR_MOTION_MODE_NORMAL;
 
     result = HI_MPI_VPSS_CreateGrp(g_vpssGrp, &stGrpAttr);
     if (result != HI_SUCCESS) {
@@ -1267,7 +1271,10 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     stChnAttr.enVideoFormat           = VIDEO_FORMAT_LINEAR;
     stChnAttr.enPixelFormat           = PIXEL_FORMAT_YVU_SEMIPLANAR_420;
     stChnAttr.enDynamicRange          = DYNAMIC_RANGE_SDR8;
-    stChnAttr.enCompressMode          = COMPRESS_MODE_NONE;
+    /* COMPRESS_MODE_SEG required for VPSS chn0 in wrap mode (SDK sample_venc.c).
+       Other channels and non-wrap mode use COMPRESS_MODE_NONE. */
+    stChnAttr.enCompressMode = (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0)
+        ? COMPRESS_MODE_SEG : COMPRESS_MODE_NONE;
     stChnAttr.stFrameRate.s32SrcFrameRate = -1;
     stChnAttr.stFrameRate.s32DstFrameRate = -1;
     /* Board correction is at VI level; VPSS carries only the user-requested XOR.
@@ -1291,6 +1298,9 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         result = HI_MPI_VPSS_SetChnBufWrapAttr(g_vpssGrp, g_vpssChn[chn], &stWrapAttr);
         if (result != HI_SUCCESS)
             sdk_log("[sdk][video] SetChnBufWrapAttr failed: 0x%x\n", result);
+        else
+            sdk_log("[sdk][video] SetChnBufWrapAttr ok (line=%u size=%u)\n",
+                    g_mainWrapBufLine, g_mainWrapBufSize);
     }
 
     /* Enable channel */
