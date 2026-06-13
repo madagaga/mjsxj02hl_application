@@ -1318,18 +1318,6 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
             sdk_log("[sdk][video] SetChnBufWrapAttr ok (line=%u size=%u)\n",
                     g_mainWrapBufLine, g_mainWrapBufSize);
 
-        /* 180° rotation via VGS — must be before EnableChn. */
-        {
-            HI_BOOL bM = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
-            HI_BOOL bF = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
-            ROTATION_E enRot = (bM && bF) ? ROTATION_180 : ROTATION_0;
-            result = HI_MPI_VPSS_SetChnRotation(g_vpssGrp, g_vpssChn[chn], enRot);
-            if (result != HI_SUCCESS)
-                sdk_log("[sdk][video] SetChnRotation failed: 0x%x\n", result);
-            else
-                sdk_log("[sdk][video] SetChnRotation ok (%s)\n",
-                        enRot == ROTATION_180 ? "180" : "0");
-        }
     }
 
     /* Enable channel */
@@ -1359,6 +1347,22 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
             return LOCALSDK_ERROR;
         }
         sdk_log("[sdk][video] VPSS started and VI->VPSS bound\n");
+
+        /* SetChnRotation for chn0+wrap: VGS requires the group to be started first. */
+        if (g_mainWrapBufLine > 0) {
+            LOCALSDK_VIDEO_OPTIONS *opts0 = sdk_video_get_options(0);
+            if (opts0) {
+                HI_BOOL bM = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)opts0->mirror);
+                HI_BOOL bF = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)opts0->flip);
+                ROTATION_E enRot = (bM && bF) ? ROTATION_180 : ROTATION_0;
+                result = HI_MPI_VPSS_SetChnRotation(g_vpssGrp, g_vpssChn[0], enRot);
+                if (result != HI_SUCCESS)
+                    sdk_log("[sdk][video] SetChnRotation(chn0) failed: 0x%x\n", result);
+                else
+                    sdk_log("[sdk][video] SetChnRotation(chn0) ok (%s)\n",
+                            enRot == ROTATION_180 ? "180" : "0");
+            }
+        }
     }
 
     sdk_log("[sdk][video] Channel %d created successfully\n", chn);
