@@ -1214,6 +1214,25 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
+    /* Apply sensor-level orientation correction via pfnMirrorFlip.
+       The JXF22 on MJSXJ02HL is mounted 180°; correcting at the sensor (I2C)
+       lets all MPP stages (VPSS chn0+wrap included) keep bMirror=bFlip=FALSE.
+       Wait 300ms for the ISP thread to complete pfnCmosSensorInit first. */
+    if (g_board_cfg->default_mirror || g_board_cfg->default_flip) {
+        ISP_SNS_MIRRORFLIP_TYPE_E eMirrorFlip;
+        usleep(300000);
+        if (g_board_cfg->default_mirror && g_board_cfg->default_flip)
+            eMirrorFlip = ISP_SNS_MIRROR_FLIP;
+        else if (g_board_cfg->default_mirror)
+            eMirrorFlip = ISP_SNS_MIRROR;
+        else
+            eMirrorFlip = ISP_SNS_FLIP;
+        if (g_sensor_cfg->p_sns_obj->pfnMirrorFlip) {
+            g_sensor_cfg->p_sns_obj->pfnMirrorFlip(0, eMirrorFlip);
+            sdk_log("[sdk][video] sensor pfnMirrorFlip(%d) applied\n", eMirrorFlip);
+        }
+    }
+
     /* VPSS group */
     memset(&stGrpAttr, 0, sizeof(VPSS_GRP_ATTR_S));
     stGrpAttr.u32MaxW                     = g_sensor_cfg->isp_pub_attr.stSnsSize.u32Width;
@@ -1282,20 +1301,15 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     stChnAttr.stFrameRate.s32SrcFrameRate = -1;
     stChnAttr.stFrameRate.s32DstFrameRate = -1;
 
-    {
-        HI_BOOL bEffectiveMirror = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
-        HI_BOOL bEffectiveFlip   = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
-        /* Board 180° correction XOR user-requested flip/mirror.
-           In VI_ONLINE_VPSS_ONLINE, VI is a pass-through so correction lives at VPSS level.
-           For chn0+wrap, SetChnBufWrapAttr returns ILLEGAL_PARAM if bMirror/bFlip are non-zero;
-           use SetChnRotation(ROTATION_180) after EnableChn instead. */
-        if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
-            stChnAttr.bMirror = HI_FALSE;
-            stChnAttr.bFlip   = HI_FALSE;
-        } else {
-            stChnAttr.bMirror = bEffectiveMirror;
-            stChnAttr.bFlip   = bEffectiveFlip;
-        }
+    /* Board orientation is corrected at sensor level via pfnMirrorFlip in local_sdk_video_init.
+       VPSS channels use user-requested mirror/flip only (no board XOR).
+       chn0+wrap requires bMirror=bFlip=FALSE; sensor correction makes the image correct. */
+    if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
+        stChnAttr.bMirror = HI_FALSE;
+        stChnAttr.bFlip   = HI_FALSE;
+    } else {
+        stChnAttr.bMirror = (HI_BOOL)options->mirror;
+        stChnAttr.bFlip   = (HI_BOOL)options->flip;
     }
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
@@ -1347,22 +1361,6 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
             return LOCALSDK_ERROR;
         }
         sdk_log("[sdk][video] VPSS started and VI->VPSS bound\n");
-
-        /* SetChnRotation for chn0+wrap: VGS requires the group to be started first. */
-        if (g_mainWrapBufLine > 0) {
-            LOCALSDK_VIDEO_OPTIONS *opts0 = sdk_video_get_options(0);
-            if (opts0) {
-                HI_BOOL bM = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)opts0->mirror);
-                HI_BOOL bF = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)opts0->flip);
-                ROTATION_E enRot = (bM && bF) ? ROTATION_180 : ROTATION_0;
-                result = HI_MPI_VPSS_SetChnRotation(g_vpssGrp, g_vpssChn[0], enRot);
-                if (result != HI_SUCCESS)
-                    sdk_log("[sdk][video] SetChnRotation(chn0) failed: 0x%x\n", result);
-                else
-                    sdk_log("[sdk][video] SetChnRotation(chn0) ok (%s)\n",
-                            enRot == ROTATION_180 ? "180" : "0");
-            }
-        }
     }
 
     sdk_log("[sdk][video] Channel %d created successfully\n", chn);
@@ -1390,28 +1388,19 @@ int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         return LOCALSDK_ERROR;
     }
 
-    {
-        HI_BOOL bM = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
-        HI_BOOL bF = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
-        /* For chn0+wrap, bMirror/bFlip must stay FALSE (same rule as create path). */
-        if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
-            stChnAttr.bMirror = HI_FALSE;
-            stChnAttr.bFlip   = HI_FALSE;
-        } else {
-            stChnAttr.bMirror = bM;
-            stChnAttr.bFlip   = bF;
-        }
+    /* Board orientation corrected at sensor level; VPSS uses user options only. */
+    if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
+        stChnAttr.bMirror = HI_FALSE;
+        stChnAttr.bFlip   = HI_FALSE;
+    } else {
+        stChnAttr.bMirror = (HI_BOOL)options->mirror;
+        stChnAttr.bFlip   = (HI_BOOL)options->flip;
+    }
 
-        result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
-        if (result != HI_SUCCESS) {
-            sdk_log("[sdk][video] Failed to set channel attr: 0x%x\n", result);
-            return LOCALSDK_ERROR;
-        }
-
-        if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
-            ROTATION_E enRot = (bM && bF) ? ROTATION_180 : ROTATION_0;
-            HI_MPI_VPSS_SetChnRotation(g_vpssGrp, g_vpssChn[chn], enRot);
-        }
+    result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
+    if (result != HI_SUCCESS) {
+        sdk_log("[sdk][video] Failed to set channel attr: 0x%x\n", result);
+        return LOCALSDK_ERROR;
     }
 
     /* Update video parameters */

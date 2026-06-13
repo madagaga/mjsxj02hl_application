@@ -1,7 +1,7 @@
 /* Board configuration for Xiaomi MJSXJ02HL.
  * GPIO assignments and hardware layout from runtime trace (trace.txt).
- * The JXF22 sensor is mounted rotated 180° on this PCB, hence default
- * mirror + flip = HI_TRUE (XOR'd with user mirror/flip options).
+ * The JXF22 sensor is mounted rotated 180° on this PCB; default_mirror/flip=TRUE
+ * trigger a pfnMirrorFlip(ISP_SNS_MIRROR_FLIP) call in local_sdk_video_init.
  */
 
 #include "platform.h"
@@ -20,7 +20,7 @@ static const board_cfg_t g_board_mjsxj02hl = {
     .gpio_photo_sensor = 9,    /* Photo-sensitive sensor (input) */
     .gpio_ircut_step_us = 50000, /* 50ms between IR-cut motor pulses */
 
-    /* Sensor is soldered upside-down; base 180° correction before user XOR */
+    /* Sensor is soldered upside-down; pfnMirrorFlip(ISP_SNS_MIRROR_FLIP) applied at ISP init */
     .default_mirror    = HI_TRUE,
     .default_flip      = HI_TRUE,
 
