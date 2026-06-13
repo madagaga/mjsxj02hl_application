@@ -1317,6 +1317,19 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         else
             sdk_log("[sdk][video] SetChnBufWrapAttr ok (line=%u size=%u)\n",
                     g_mainWrapBufLine, g_mainWrapBufSize);
+
+        /* 180° rotation via VGS — must be before EnableChn. */
+        {
+            HI_BOOL bM = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
+            HI_BOOL bF = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
+            ROTATION_E enRot = (bM && bF) ? ROTATION_180 : ROTATION_0;
+            result = HI_MPI_VPSS_SetChnRotation(g_vpssGrp, g_vpssChn[chn], enRot);
+            if (result != HI_SUCCESS)
+                sdk_log("[sdk][video] SetChnRotation failed: 0x%x\n", result);
+            else
+                sdk_log("[sdk][video] SetChnRotation ok (%s)\n",
+                        enRot == ROTATION_180 ? "180" : "0");
+        }
     }
 
     /* Enable channel */
@@ -1324,20 +1337,6 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] Failed to enable channel: 0x%x\n", result);
         return LOCALSDK_ERROR;
-    }
-
-    /* For chn0+wrap: bMirror/bFlip were forced FALSE above; apply 180° rotation
-       via VGS (SetChnBufWrapAttr rejects non-zero bMirror/bFlip). */
-    if (g_vpssChn[chn] == 0 && g_mainWrapBufLine > 0) {
-        HI_BOOL bM = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
-        HI_BOOL bF = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
-        ROTATION_E enRot = (bM && bF) ? ROTATION_180 : ROTATION_0;
-        result = HI_MPI_VPSS_SetChnRotation(g_vpssGrp, g_vpssChn[chn], enRot);
-        if (result != HI_SUCCESS)
-            sdk_log("[sdk][video] SetChnRotation failed: 0x%x\n", result);
-        else
-            sdk_log("[sdk][video] SetChnRotation ok (%s)\n",
-                    enRot == ROTATION_180 ? "180" : "0");
     }
 
     /* Store options in global state */
