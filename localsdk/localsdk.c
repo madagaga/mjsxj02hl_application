@@ -1131,7 +1131,7 @@ int local_sdk_video_init(int fps) {
     {
         VPSS_VENC_WRAP_PARAM_S stWrap;
         memset(&stWrap, 0, sizeof(stWrap));
-        stWrap.bAllOnline       = HI_FALSE; /* VI_ONLINE_VPSS_OFFLINE */
+        stWrap.bAllOnline       = HI_TRUE; /* VI_ONLINE_VPSS_ONLINE */
         /* SDK doc: u32FrameRate and u32FullLinesStd are the sensor INPUT rate to
            VIPROC, not the VPSS output rate.  Use native 30fps sensor values. */
         stWrap.u32FrameRate     = (HI_U32)g_sensor_cfg->isp_pub_attr.f32FrameRate;
@@ -1192,11 +1192,15 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
-    /* VI-VPSS working mode: VI online -> VPSS offline (SoC default, matches the
-       original liblocalsdk.so). Must be set before creating the VI pipe. */
+    /* VI-VPSS working mode: VI_ONLINE_VPSS_ONLINE — VI and VPSS share a direct
+       hardware pipeline (no VB between VI and VPSS). This is the correct mode for
+       JXF22 @ 1920px (ONLINE_LIMIT_WIDTH=2304 in SDK samples). Benefits:
+       - Wrap mode works naturally (streaming pipeline)
+       - No extra VI-capture VB pool needed (saves ~9 MB vs OFFLINE with wrap)
+       - Matches original firmware (flip/mirror at VPSS + wrap both worked there) */
     memset(&stVIVPSSMode, 0, sizeof(stVIVPSSMode));
     HI_MPI_SYS_GetVIVPSSMode(&stVIVPSSMode);
-    stVIVPSSMode.aenMode[0] = VI_ONLINE_VPSS_OFFLINE;
+    stVIVPSSMode.aenMode[0] = VI_ONLINE_VPSS_ONLINE;
     result = HI_MPI_SYS_SetVIVPSSMode(&stVIVPSSMode);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][video] HI_MPI_SYS_SetVIVPSSMode failed: 0x%x\n", result);
