@@ -28,14 +28,15 @@ static const board_cfg_t g_board_mjsxj02hl = {
     .ai_dev = 0,
     .ao_dev = 0,
 
-    /* VB pool block counts. cnt=2 for full-frame (pipeline overlap). */
+    /* VB pool block counts. cnt=2 for pipeline overlap (one block written, one consumed). */
     .vb_main_blk_cnt = 2,
     .vb_sub_blk_cnt  = 5,
 
-    /* Wrap disabled: VENC needs ring-buffer streaming config to consume a 416-line
-       ring; without it VENC never gets a complete frame signal from VPSS.
-       Full-frame VB restores normal operation; VPSS NR stays off (bNrEn=HI_FALSE). */
-    .vb_main_wrap_lines = 0,
+    /* Wrap mode: 416 lines matches original firmware (inner_GetWrapBufLine_By_SnsType).
+       VB block size = VPSS_GetWrapBufferSize(1920, 1080, 416) ≈ 1.2 MB instead of 3 MB
+       full-frame → saves ~3.8 MB of MMZ → room for VPSS 3DNR reference frame buffer.
+       SetChnBufWrapAttr now works because flip/mirror is at VI level (VPSS chn0 clean). */
+    .vb_main_wrap_lines = 416,
 
     /* IVP model: must match sub-channel resolution (640x360) */
     .ivp_oms_path = "/usr/app/local/ivp_re_im_allday_16chn_pr1_640x360_v1040.oms",
