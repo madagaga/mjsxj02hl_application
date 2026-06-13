@@ -61,7 +61,7 @@
 #include "hi_sns_ctrl.h"
 #include "platform/platform.h"
 
-/* sceneauto library — handles ISP scene switching and auto night mode */
+/* sceneauto: retained only for link compatibility; no longer called */
 extern int sceneauto_cut_night_mode(int mode);
 extern int sceneauto_resume(void);
 extern int sceneauto_pause(void);
@@ -154,6 +154,10 @@ static uint32_t g_alarmState = 0;
 static int (*g_nightStateCb)(int state) = NULL;
 static int (*g_keydownCb)(void) = NULL;
 static int g_keydownTimeout = 0;
+
+/* Auto night light polling thread */
+static pthread_t        g_nightLightThread = 0;
+static volatile int     g_nightLightRun    = 0;
 
 /* Speaker and Audio state */
 static int32_t g_speakerRunState = 0; /* 3 = started */
@@ -2713,44 +2717,55 @@ int local_sdk_setup_keydown_set_callback(int timeout, int (*callback)()) {
 /**
  * @brief Set daytime mode (color image) via ISP
  */
+static int isp_set_saturation(HI_U8 satu) {
+    ISP_CSC_ATTR_S st;
+    if (HI_MPI_ISP_GetCSCAttr(0, &st) != HI_SUCCESS) return LOCALSDK_ERROR;
+    st.u8Satu = satu;
+    return (HI_MPI_ISP_SetCSCAttr(0, &st) == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
+}
+
 int local_sdk_video_set_daytime_mode() {
-    int result = sceneauto_cut_night_mode(0);
-    sdk_log("[sdk][local_sdk_video_set_daytime_mode] sceneauto cut day mode [ret:%d]\n", result);
-    return LOCALSDK_OK;
+    int ret = isp_set_saturation(100);
+    sdk_log("[sdk][night] set daytime mode (saturation=100): %s\n", ret == LOCALSDK_OK ? "ok" : "error");
+    return ret;
 }
 
 int local_sdk_video_set_night_mode() {
-    int result = sceneauto_cut_night_mode(1);
-    usleep(120000);
-    sdk_log("[sdk][local_sdk_video_set_night_mode] sceneauto cut night mode [ret:%d]\n", result);
-    return LOCALSDK_OK;
+    int ret = isp_set_saturation(0);
+    if (ret == LOCALSDK_OK) usleep(120000);
+    sdk_log("[sdk][night] set night mode (saturation=0): %s\n", ret == LOCALSDK_OK ? "ok" : "error");
+    return ret;
+}
+
+/* Polls the photo-sensitive GPIO (gpio9) every 500 ms.
+   gpio9=1 → ambient light → day; gpio9=0 → dark → night.
+   Fires g_nightStateCb on every edge. */
+static void *night_light_thread(void *arg) {
+    (void)arg;
+    int last_state = -1;
+    while (g_nightLightRun) {
+        int v     = gpio_read_value(g_board_cfg->gpio_photo_sensor);
+        int state = (v == 0) ? 0 /* NIGHT_MODE_STATE_NIGHTTIME */
+                              : 1 /* NIGHT_MODE_STATE_DAYTIME  */;
+        if (state != last_state) {
+            last_state = state;
+            sdk_log("[sdk][night] photo sensor → %s\n", state ? "day" : "night");
+            if (g_nightStateCb) g_nightStateCb(state);
+        }
+        usleep(500000);
+    }
+    return NULL;
 }
 
 int local_sdk_auto_night_light() {
-    /* sceneauto (vendor libsceneauto.so) drives auto day/night ISP switching.
-       The library resolves its INI config path from the binary location via
-       getcwd()/dirname(), so we temporarily chdir to the scene INI directory
-       before calling sceneauto_init() to make the path resolution succeed.
-       Degrade gracefully if it still fails -- this vendor lib is slated for
-       rewrite on top of HI_MPI_ISP_*. */
-    char orig_cwd[PATH_MAX];
-    if (!getcwd(orig_cwd, sizeof(orig_cwd))) orig_cwd[0] = '\0';
-
-    if (g_board_cfg->scene_ini_dir && chdir(g_board_cfg->scene_ini_dir) != 0)
-        sdk_log("[sdk][night] chdir(%s) failed: %s\n", g_board_cfg->scene_ini_dir, strerror(errno));
-
-    int init_ret = sceneauto_init();
-
-    if (orig_cwd[0]) chdir(orig_cwd);
-
-    if (init_ret != 0) {
-        sdk_log("[sdk][night] sceneauto_init failed; auto night switching disabled (degraded)\n");
-        return LOCALSDK_OK;
+    if (g_nightLightThread) return LOCALSDK_OK;
+    g_nightLightRun = 1;
+    if (pthread_create(&g_nightLightThread, NULL, night_light_thread, NULL) != 0) {
+        g_nightLightRun = 0;
+        sdk_log("[sdk][night] auto night thread create failed\n");
+        return LOCALSDK_ERROR;
     }
-    if (sceneauto_resume() != 0) {
-        sdk_log("[sdk][night] sceneauto_resume failed; auto night switching disabled (degraded)\n");
-        return LOCALSDK_OK;
-    }
+    sdk_log("[sdk][night] auto night light thread started\n");
     return LOCALSDK_OK;
 }
 
