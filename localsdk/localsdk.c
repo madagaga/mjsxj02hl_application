@@ -2757,22 +2757,55 @@ int local_sdk_video_set_night_mode() {
     return ret;
 }
 
-/* Polls the photo-sensitive GPIO (gpio9) every 500 ms.
-   gpio9=1 → ambient light → day; gpio9=0 → dark → night.
-   Fires g_nightStateCb on every edge. */
+/* Night/day detection via ISP AE average luminance (HI_MPI_ISP_QueryExposureInfo).
+   Same source as sceneauto's internal luminance thread in the original firmware.
+   Hysteresis: need NIGHT_CONSEC_THRESHOLD consecutive readings below NIGHT_LUM_THRESH
+   to switch to night, and DAY_CONSEC_THRESHOLD consecutive readings above DAY_LUM_THRESH
+   to switch back to day. Avoids flapping in transitional light conditions. */
+#define NIGHT_LUM_THRESH        30   /* u8AveLum below this → candidate for night */
+#define DAY_LUM_THRESH          60   /* u8AveLum above this → candidate for day   */
+#define NIGHT_CONSEC_THRESHOLD  3    /* consecutive dark samples required           */
+#define DAY_CONSEC_THRESHOLD    3    /* consecutive bright samples required         */
+
 static void *night_light_thread(void *arg) {
     (void)arg;
-    int last_state = -1;
+    int last_state    = 1; /* assume day at startup */
+    int consec_night  = 0;
+    int consec_day    = 0;
+
     while (g_nightLightRun) {
-        int v     = gpio_read_value(g_board_cfg->gpio_photo_sensor);
-        int state = (v == 0) ? 0 /* NIGHT_MODE_STATE_NIGHTTIME */
-                              : 1 /* NIGHT_MODE_STATE_DAYTIME  */;
-        if (state != last_state) {
-            last_state = state;
-            sdk_log("[sdk][night] photo sensor → %s\n", state ? "day" : "night");
-            if (g_nightStateCb) g_nightStateCb(state);
+        ISP_EXP_INFO_S stExp;
+        if (HI_MPI_ISP_QueryExposureInfo(0, &stExp) != HI_SUCCESS) {
+            usleep(500000);
+            continue;
         }
-        usleep(500000);
+        HI_U8 lum = stExp.u8AveLum;
+        sdk_log("[sdk][night] ISP AE lum=%u state=%s\n", lum, last_state ? "day" : "night");
+
+        if (lum < NIGHT_LUM_THRESH) {
+            consec_night++;
+            consec_day = 0;
+        } else if (lum > DAY_LUM_THRESH) {
+            consec_day++;
+            consec_night = 0;
+        } else {
+            consec_night = 0;
+            consec_day   = 0;
+        }
+
+        if (last_state == 1 && consec_night >= NIGHT_CONSEC_THRESHOLD) {
+            last_state   = 0; /* NIGHT_MODE_STATE_NIGHTTIME */
+            consec_night = 0;
+            sdk_log("[sdk][night] ISP AE → night (lum=%u)\n", lum);
+            if (g_nightStateCb) g_nightStateCb(0);
+        } else if (last_state == 0 && consec_day >= DAY_CONSEC_THRESHOLD) {
+            last_state = 1; /* NIGHT_MODE_STATE_DAYTIME */
+            consec_day = 0;
+            sdk_log("[sdk][night] ISP AE → day (lum=%u)\n", lum);
+            if (g_nightStateCb) g_nightStateCb(1);
+        }
+
+        usleep(1000000); /* sample every 1 s */
     }
     return NULL;
 }

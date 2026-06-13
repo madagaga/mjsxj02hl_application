@@ -54,7 +54,13 @@ static int night_mode_change_callback(int state) {
     
     switch(state) {
         case NIGHT_MODE_STATE_NIGHTTIME: // night
-            
+
+            // Turn on IR LEDs
+            if(local_sdk_open_night_light() == LOCALSDK_ERROR) {
+                LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_open_night_light()");
+                result = LOCALSDK_ERROR;
+            } else LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_open_night_light()");
+
             // Enable grayscale
             if(APP_CFG.night.gray == 2) { // auto
                 if(local_sdk_video_set_night_mode() == LOCALSDK_ERROR) {
@@ -62,28 +68,28 @@ static int night_mode_change_callback(int state) {
                     result = LOCALSDK_ERROR;
                 } else LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_video_set_night_mode()");
             }
-            
+
             // Open IR-cut filter
             if(local_sdk_open_ircut() == LOCALSDK_ERROR) {
                 LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_open_ircut()");
                 result = LOCALSDK_ERROR;
             } else LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_open_ircut()");
-            
+
             // MQTT
             if(mqtt_is_ready()) {
                 if(night_state_mqtt(true, (APP_CFG.night.gray == 2 ? true : (APP_CFG.night.gray == 1)))) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "night_state_mqtt()");
                 else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "night_state_mqtt()");
             }
-            
+
             break;
         case NIGHT_MODE_STATE_DAYTIME: // day
-            
+
             // Close IR-cut filter
             if(local_sdk_close_ircut() == LOCALSDK_ERROR) {
                 LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_close_ircut()");
                 result = LOCALSDK_ERROR;
             } else LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_close_ircut()");
-            
+
             // Disable grayscale
             if(APP_CFG.night.gray == 2) { // auto
                 if(local_sdk_video_set_daytime_mode() == LOCALSDK_ERROR) {
@@ -91,13 +97,19 @@ static int night_mode_change_callback(int state) {
                     result = LOCALSDK_ERROR;
                 } else LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_video_set_daytime_mode()");
             }
-            
+
+            // Turn off IR LEDs
+            if(local_sdk_close_night_light() == LOCALSDK_ERROR) {
+                LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_close_night_light()");
+                result = LOCALSDK_ERROR;
+            } else LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_close_night_light()");
+
             // MQTT
             if(mqtt_is_ready()) {
                 if(night_state_mqtt(false, (APP_CFG.night.gray == 2 ? false : (APP_CFG.night.gray == 1)))) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "night_state_mqtt()");
                 else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "night_state_mqtt()");
             }
-            
+
             break;
         case NIGHT_MODE_STATE_DISABLE: // Disable alarm system
             if(alarm_switch(false)) {
