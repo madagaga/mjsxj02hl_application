@@ -935,10 +935,10 @@ static int sdk_video_vi_start(void) {
     stChnAttr.enDynamicRange   = DYNAMIC_RANGE_SDR8;
     stChnAttr.enVideoFormat    = VIDEO_FORMAT_LINEAR;
     stChnAttr.enCompressMode   = COMPRESS_MODE_NONE;
-    /* Board correction (sensor mounted 180°) applied here, upstream of VPSS.
-       Keeping bMirror/bFlip=FALSE on VPSS chn0 is required for wrap mode. */
-    stChnAttr.bMirror          = g_board_cfg->default_mirror;
-    stChnAttr.bFlip            = g_board_cfg->default_flip;
+    /* In VI_ONLINE_VPSS_ONLINE the VI channel is a pass-through; bMirror/bFlip
+       are not applied at this level. Board correction moves to VPSS. */
+    stChnAttr.bMirror          = HI_FALSE;
+    stChnAttr.bFlip            = HI_FALSE;
     stChnAttr.u32Depth         = 0;
     stChnAttr.stFrameRate.s32SrcFrameRate = -1;
     stChnAttr.stFrameRate.s32DstFrameRate = -1;
@@ -1281,10 +1281,12 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         ? COMPRESS_MODE_SEG : COMPRESS_MODE_NONE;
     stChnAttr.stFrameRate.s32SrcFrameRate = -1;
     stChnAttr.stFrameRate.s32DstFrameRate = -1;
-    /* Board correction is at VI level; VPSS carries only the user-requested XOR.
-       This keeps bMirror/bFlip=0 on chn0 by default, required for wrap mode. */
-    stChnAttr.bMirror = (HI_BOOL)options->mirror;
-    stChnAttr.bFlip   = (HI_BOOL)options->flip;
+    /* Board 180° correction XOR user-requested flip/mirror.
+       In VI_ONLINE_VPSS_ONLINE, VI is a pass-through so correction lives here.
+       In ONLINE mode SetChnBufWrapAttr accepts non-zero bMirror/bFlip (original
+       firmware used VPSS-level flip+mirror with wrap without issue). */
+    stChnAttr.bMirror = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
+    stChnAttr.bFlip   = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
@@ -1361,9 +1363,9 @@ int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         return LOCALSDK_ERROR;
     }
 
-    /* Board correction is at VI level; VPSS carries only the user-requested XOR. */
-    stChnAttr.bMirror = (HI_BOOL)options->mirror;
-    stChnAttr.bFlip   = (HI_BOOL)options->flip;
+    /* Board 180° correction XOR user-requested flip/mirror (same as create path). */
+    stChnAttr.bMirror = (HI_BOOL)(g_board_cfg->default_mirror ^ (HI_BOOL)options->mirror);
+    stChnAttr.bFlip   = (HI_BOOL)(g_board_cfg->default_flip   ^ (HI_BOOL)options->flip);
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &stChnAttr);
     if (result != HI_SUCCESS) {
