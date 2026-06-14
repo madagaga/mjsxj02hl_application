@@ -198,18 +198,29 @@ static HI_S32 cmos_init_ae_exp_function(AE_SENSOR_EXP_FUNC_S *pstExpFuncs)
 
 /* ---- AWB callbacks ------------------------------------------------------- */
 
+/* CCM tables extracted from vendor firmware sensor.ini (AutoCCMTable_0..4,
+ * AutoColorTemp = "7526, 6500, 5359, 3925, 2665"). Values are HI_U16 in
+ * Format:8.8 (256 = 1.0); bit 15 set means negative magnitude. Replacing
+ * the glutinium tables which had R diagonal ≈2.44 vs vendor 1.80, causing
+ * a violet tint on this specific camera. */
 static AWB_CCM_S g_stAwbCcm = {
-    .u16CCMTabNum = 3,
+    .u16CCMTabNum = 5,
     .astCCMTab = {
-        { 4950, { 0x0270, 0x814F, 0x8021,
-                  0x8047, 0x01D2, 0x808B,
-                  0x801A, 0x80D8, 0x01F2 } },
-        { 3650, { 0x01C3, 0x80A7, 0x801C,
-                  0x807F, 0x01AD, 0x802E,
-                  0x8048, 0x80E7, 0x022F } },
-        { 2700, { 0x022B, 0x80D1, 0x805A,
-                  0x8053, 0x01B2, 0x805F,
-                  0x8065, 0x81FE, 0x0363 } },
+        { 7526, { 0x01D9, 0x80CC, 0x800D,
+                  0x803E, 0x01F6, 0x80B8,
+                  0x8016, 0x80AE, 0x01C4 } },
+        { 6500, { 0x020A, 0x80F9, 0x8011,
+                  0x8051, 0x020B, 0x80BA,
+                  0x801C, 0x8083, 0x019F } },
+        { 5359, { 0x01CC, 0x80C6, 0x8006,
+                  0x8052, 0x0205, 0x80B3,
+                  0x8021, 0x810B, 0x022C } },
+        { 3925, { 0x01DA, 0x80C1, 0x8019,
+                  0x8045, 0x01F3, 0x80AE,
+                  0x8014, 0x8150, 0x0264 } },
+        { 2665, { 0x0215, 0x8101, 0x8014,
+                  0x8064, 0x0184, 0x8020,
+                  0x8089, 0x8207, 0x0390 } },
     },
 };
 
@@ -228,11 +239,15 @@ static HI_S32 cmos_get_awb_default(VI_PIPE ViPipe, AWB_SENSOR_DEFAULT_S *pstAwbS
 
     memset(pstAwbSnsDft, 0, sizeof(AWB_SENSOR_DEFAULT_S));
 
-    pstAwbSnsDft->u16WbRefTemp        = 4950;
-    pstAwbSnsDft->au16GainOffset[0]   = 0x019C;
-    pstAwbSnsDft->au16GainOffset[1]   = 0x0100;
-    pstAwbSnsDft->au16GainOffset[2]   = 0x0100;
-    pstAwbSnsDft->au16GainOffset[3]   = 0x01CB;
+    /* Reference color temperature matching vendor sensor.ini AutoColorTemp[1]=6500K. */
+    pstAwbSnsDft->u16WbRefTemp        = 6500;
+    /* Vendor-calibrated WB gains from sensor.ini AutoStaticWb="417,256,256,455".
+     * Prior glutinium values (R=0x019C, B=0x01CB) were for a different integration
+     * and caused a violet tint together with mismatched CCM tables. */
+    pstAwbSnsDft->au16GainOffset[0]   = 0x01A1; /* R  = 417/256 ≈ 1.63× */
+    pstAwbSnsDft->au16GainOffset[1]   = 0x0100; /* Gr = 1.0× */
+    pstAwbSnsDft->au16GainOffset[2]   = 0x0100; /* Gb = 1.0× */
+    pstAwbSnsDft->au16GainOffset[3]   = 0x01C7; /* B  = 455/256 ≈ 1.78× */
     pstAwbSnsDft->as32WbPara[0]       = 49;
     pstAwbSnsDft->as32WbPara[1]       = 207;
     pstAwbSnsDft->as32WbPara[2]       = 0;

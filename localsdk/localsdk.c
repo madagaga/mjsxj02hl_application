@@ -61,11 +61,7 @@
 #include "hi_sns_ctrl.h"
 #include "platform/platform.h"
 
-/* sceneauto: retained only for link compatibility; no longer called */
-extern int sceneauto_cut_night_mode(int mode);
-extern int sceneauto_resume(void);
-extern int sceneauto_pause(void);
-extern int sceneauto_init(void);
+#include "scene/scene.h"
 
 /* Forward declarations for internal video functions */
 static void sdk_video_shutdown_channel(int chn);
@@ -1083,6 +1079,16 @@ static int sdk_video_isp_init(int fps) {
     if (pthread_create(&g_ispThread, NULL, sdk_isp_thread, NULL) != 0) {
         sdk_log("[sdk][video] Failed to create ISP thread\n");
         return LOCALSDK_ERROR;
+    }
+
+    if (g_board_cfg && g_board_cfg->scene_ini_dir) {
+        char day_ini[256], night_ini[256];
+        snprintf(day_ini, sizeof(day_ini), "%s/config_product_scene_1080p20_linear.ini",
+                 g_board_cfg->scene_ini_dir);
+        snprintf(night_ini, sizeof(night_ini), "%s/config_product_scene_1080p20_linear_ir.ini",
+                 g_board_cfg->scene_ini_dir);
+        if (scene_init(day_ini, night_ini) == 0)
+            scene_set_day();
     }
 
     return LOCALSDK_OK;
@@ -2863,14 +2869,22 @@ static void *night_light_thread(void *arg) {
             last_state   = 0; /* NIGHT_MODE_STATE_NIGHTTIME */
             consec_night = 0;
             sdk_log("[sdk][night] ISP AE  night (lum=%u)\n", lum);
+            /* Switch ISP to night profile before opening IR-cut filter so the
+               image goes grayscale and low-gain before IR light floods in. */
+            scene_set_night();
             if (g_nightStateCb) g_nightStateCb(0);
             usleep((unsigned int)TRANSITION_SETTLE_S * 1000000u);
         } else if (last_state == 0 && consec_day >= DAY_CONSEC_THRESHOLD) {
             last_state = 1; /* NIGHT_MODE_STATE_DAYTIME */
             consec_day = 0;
             sdk_log("[sdk][night] ISP AE  day (lum=%u)\n", lum);
+            /* Cut IR light first, wait for the IR-cut filter motor to fully
+               insert before restoring color ISP params — avoids a saturated
+               colour flash while the filter is mid-travel. */
             if (g_nightStateCb) g_nightStateCb(1);
-            usleep((unsigned int)TRANSITION_SETTLE_S * 1000000u);
+            usleep(1500000u); /* ~1.5 s for IR-cut filter motor insertion */
+            scene_set_day();
+            usleep((unsigned int)TRANSITION_SETTLE_S * 1000000u - 1500000u);
         }
 
         usleep(1000000); /* sample every 1 s */
