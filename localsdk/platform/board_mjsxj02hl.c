@@ -33,8 +33,10 @@ static const board_cfg_t g_board_mjsxj02hl = {
     .vb_sub_blk_cnt  = 5,
 
     /* Wrap mode: 416 lines matches original firmware (inner_GetWrapBufLine_By_SnsType).
-       VB block size = VPSS_GetWrapBufferSize(1920, 1080, 416) ≈ 1.2 MB instead of 3 MB
-       full-frame → saves ~3.8 MB of MMZ → room for VPSS 3DNR reference frame buffer.
+       VB block size = VPSS_GetWrapBufferSize(1920, 1080, 416) = 1198080 B ≈ 1.17 MB
+       instead of ~3.14 MB full-frame; 2 blocks saves ~4 MB on VB pool.
+       3DNR VPSS(0) Ref buffer takes back 2.2 MB → net savings ~1.8 MB vs full-frame
+       without 3DNR. Confirmed on real hardware: MMZ total 19 MB, used 16.6 MB, free 2.4 MB.
        Requires VI_ONLINE_VPSS_ONLINE; in OFFLINE mode wrap output reaches VENC silently
        but VENC receives no frames. */
     .vb_main_wrap_lines = 416,
