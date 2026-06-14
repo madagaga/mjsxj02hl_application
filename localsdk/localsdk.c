@@ -2817,7 +2817,10 @@ int local_sdk_video_set_night_mode() {
    to switch to night, and DAY_CONSEC_THRESHOLD consecutive readings above DAY_LUM_THRESH
    to switch back to day. Avoids flapping in transitional light conditions. */
 #define NIGHT_LUM_THRESH        30   /* u8AveLum below this → candidate for night */
-#define DAY_LUM_THRESH          60   /* u8AveLum above this → candidate for day   */
+#define DAY_LUM_THRESH          35   /* u8AveLum above this → candidate for day.
+                                      * With IRCF open + IR LEDs on in daytime,
+                                      * lum stabilises at ~43; keeping threshold
+                                      * below that allows recovery to day mode. */
 #define NIGHT_CONSEC_THRESHOLD  3    /* consecutive dark samples required           */
 #define DAY_CONSEC_THRESHOLD    3    /* consecutive bright samples required         */
 
@@ -2826,6 +2829,11 @@ static void *night_light_thread(void *arg) {
     int last_state    = 1; /* assume day at startup */
     int consec_night  = 0;
     int consec_day    = 0;
+
+    /* Wait for ISP AE to converge before starting detection.
+     * u8AveLum is ~0 for the first few seconds after ISP start,
+     * which would falsely trigger night mode. */
+    usleep(8000000); /* 8 seconds */
 
     while (g_nightLightRun) {
         ISP_EXP_INFO_S stExp;
