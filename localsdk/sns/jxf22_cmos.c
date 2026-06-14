@@ -196,18 +196,18 @@ static HI_S32 cmos_init_ae_exp_function(AE_SENSOR_EXP_FUNC_S *pstExpFuncs)
 /* ---- AWB callbacks ------------------------------------------------------- */
 
 static AWB_CCM_S g_stAwbCcm = {
-    4950,
-    { 0x0270, 0x814F, 0x8021,
-      0x8047, 0x01D2, 0x808B,
-      0x801A, 0x80D8, 0x01F2 },
-    3650,
-    { 0x01C3, 0x80A7, 0x801C,
-      0x807F, 0x01AD, 0x802E,
-      0x8048, 0x80E7, 0x022F },
-    2700,
-    { 0x022B, 0x80D1, 0x805A,
-      0x8053, 0x01B2, 0x805F,
-      0x8065, 0x81FE, 0x0363 },
+    .u16CCMTabNum = 3,
+    .astCCMTab = {
+        { 4950, { 0x0270, 0x814F, 0x8021,
+                  0x8047, 0x01D2, 0x808B,
+                  0x801A, 0x80D8, 0x01F2 } },
+        { 3650, { 0x01C3, 0x80A7, 0x801C,
+                  0x807F, 0x01AD, 0x802E,
+                  0x8048, 0x80E7, 0x022F } },
+        { 2700, { 0x022B, 0x80D1, 0x805A,
+                  0x8053, 0x01B2, 0x805F,
+                  0x8065, 0x81FE, 0x0363 } },
+    },
 };
 
 static AWB_AGC_TABLE_S g_stAwbAgcTable = {
@@ -265,7 +265,6 @@ static HI_S32 cmos_init_awb_exp_function(AWB_SENSOR_EXP_FUNC_S *pstExpFuncs)
 
 /* Gamma curve (1025 points, standard sRGB-ish curve from v3 source). */
 static ISP_CMOS_GAMMA_S g_stIspGamma = {
-    .bValid = 1,
     .au16Gamma = {
         0,    93,   189,  285,  380,  473,  563,  649,  712,  772,
         829,  885,  940,  995,  1051, 1108, 1167, 1201, 1236, 1272,
