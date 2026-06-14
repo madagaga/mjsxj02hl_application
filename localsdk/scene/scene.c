@@ -201,7 +201,11 @@ static int scene_handler(void *user, const char *section,
 static void apply_ae(const scene_params_t *p)
 {
     ISP_EXPOSURE_ATTR_S attr;
-    if (HI_MPI_ISP_GetExposureAttr(0, &attr) != HI_SUCCESS) return;
+    HI_S32 ret = HI_MPI_ISP_GetExposureAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetExposureAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
 
     attr.u8AERunInterval                         = p->ae_run_interval;
     attr.bAERouteExValid                         = p->ae_route_ex_valid;
@@ -211,7 +215,9 @@ static void apply_ae(const scene_params_t *p)
     attr.stAuto.stAEDelayAttr.u16BlackDelayFrame = p->ae_black_delay;
     attr.stAuto.stAEDelayAttr.u16WhiteDelayFrame = p->ae_white_delay;
 
-    HI_MPI_ISP_SetExposureAttr(0, &attr);
+    ret = HI_MPI_ISP_SetExposureAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetExposureAttr failed 0x%x", (unsigned)ret);
 
     if (p->ae_route_ex_valid && p->ae_route_node_num > 0) {
         ISP_AE_ROUTE_EX_S route;
@@ -223,14 +229,20 @@ static void apply_ae(const scene_params_t *p)
             route.astRouteExNode[i].u32Dgain    = p->ae_route_dgain[i];
             route.astRouteExNode[i].u32IspDgain = p->ae_route_isp_dgain[i];
         }
-        HI_MPI_ISP_SetAERouteAttrEx(0, &route);
+        ret = HI_MPI_ISP_SetAERouteAttrEx(0, &route);
+        if (ret != HI_SUCCESS)
+            LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetAERouteAttrEx failed 0x%x", (unsigned)ret);
     }
 }
 
 static void apply_ccm(const scene_params_t *p)
 {
     ISP_COLORMATRIX_ATTR_S attr;
-    if (HI_MPI_ISP_GetCCMAttr(0, &attr) != HI_SUCCESS) return;
+    HI_S32 ret = HI_MPI_ISP_GetCCMAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetCCMAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
 
     attr.enOpType = (p->ccm_op_type == 0) ? OP_TYPE_AUTO : OP_TYPE_MANUAL;
     memcpy(attr.stManual.au16CCM, p->ccm_manual, sizeof(p->ccm_manual));
@@ -247,40 +259,87 @@ static void apply_ccm(const scene_params_t *p)
                CCM_MATRIX_SIZE * sizeof(HI_U16));
     }
 
-    HI_MPI_ISP_SetCCMAttr(0, &attr);
+    ret = HI_MPI_ISP_SetCCMAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetCCMAttr op=%d failed 0x%x",
+               p->ccm_op_type, (unsigned)ret);
 }
 
+/* Apply per-ISO saturation curve AND the CSC-level saturation together.
+ *
+ * The ISP has two independent saturation controls that multiply:
+ *   1. ISP_SATURATION_ATTR_S.stAuto.au8Sat[i]  — per-ISO chroma curve
+ *   2. ISP_CSC_ATTR_S.u8Satu                   — global CSC saturation (0-100)
+ * If either is zero the output is grayscale.
+ *
+ * night.c manages (2) only when APP_CFG.night.gray==2.  We manage both here
+ * so that day/night color state is consistent regardless of the gray setting.
+ */
 static void apply_saturation(const scene_params_t *p)
 {
-    ISP_SATURATION_ATTR_S attr;
-    if (HI_MPI_ISP_GetSaturationAttr(0, &attr) != HI_SUCCESS) return;
+    /* Detect night (grayscale) profile: all per-ISO sat values are 0. */
+    HI_BOOL grayscale = HI_TRUE;
+    for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
+        if (p->sat[i] != 0) { grayscale = HI_FALSE; break; }
+    }
 
+    ISP_SATURATION_ATTR_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetSaturationAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetSaturationAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
     attr.enOpType = OP_TYPE_AUTO;
     memcpy(attr.stAuto.au8Sat, p->sat, sizeof(p->sat));
+    ret = HI_MPI_ISP_SetSaturationAttr(0, &attr);
+    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetSaturationAttr sat[0]=%u grayscale=%d ret=0x%x",
+           p->sat[0], grayscale, (unsigned)ret);
 
-    HI_MPI_ISP_SetSaturationAttr(0, &attr);
+    /* Align the CSC-level saturation: day=100, night=0. */
+    ISP_CSC_ATTR_S csc;
+    ret = HI_MPI_ISP_GetCSCAttr(0, &csc);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetCSCAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
+    csc.u8Satu = grayscale ? 0 : 100;
+    ret = HI_MPI_ISP_SetCSCAttr(0, &csc);
+    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetCSCAttr u8Satu=%u ret=0x%x",
+           csc.u8Satu, (unsigned)ret);
 }
 
 static void apply_nr(const scene_params_t *p)
 {
     ISP_NR_ATTR_S attr;
-    if (HI_MPI_ISP_GetNRAttr(0, &attr) != HI_SUCCESS) return;
+    HI_S32 ret = HI_MPI_ISP_GetNRAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetNRAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
 
     attr.enOpType = OP_TYPE_AUTO;
     memcpy(attr.stAuto.au8FineStr,    p->nr_fine_str,  sizeof(p->nr_fine_str));
     memcpy(attr.stAuto.au16CoringWgt, p->nr_coring_wgt, sizeof(p->nr_coring_wgt));
 
-    HI_MPI_ISP_SetNRAttr(0, &attr);
+    ret = HI_MPI_ISP_SetNRAttr(0, &attr);
+    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetNRAttr fine[0]=%u coring[0]=%u ret=0x%x",
+           p->nr_fine_str[0], p->nr_coring_wgt[0], (unsigned)ret);
 }
 
 static void apply_ca(const scene_params_t *p)
 {
     ISP_CA_ATTR_S attr;
-    if (HI_MPI_ISP_GetCAAttr(0, &attr) != HI_SUCCESS) return;
+    HI_S32 ret = HI_MPI_ISP_GetCAAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetCAAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
 
     attr.bEnable = p->ca_enable;
 
-    HI_MPI_ISP_SetCAAttr(0, &attr);
+    ret = HI_MPI_ISP_SetCAAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetCAAttr failed 0x%x", (unsigned)ret);
 }
 
 static void apply_scene(const scene_params_t *p)
@@ -307,7 +366,7 @@ int scene_init(const char *day_ini, const char *night_ini)
         return -1;
     }
     if (ret > 0)
-        LOGGER(LOGGER_LEVEL_WARNING, "[scene] day INI %s: parse error at line %d (long value lines — ignored)", day_ini, ret);
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] day INI %s: parse stopped at line %d (long value — ignored)", day_ini, ret);
 
     ret = ini_parse(night_ini, scene_handler, &g_night);
     if (ret < 0) {
@@ -315,17 +374,20 @@ int scene_init(const char *day_ini, const char *night_ini)
         return -1;
     }
     if (ret > 0)
-        LOGGER(LOGGER_LEVEL_WARNING, "[scene] night INI %s: parse error at line %d (long value lines — ignored)", night_ini, ret);
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] night INI %s: parse stopped at line %d (long value — ignored)", night_ini, ret);
 
     g_initialized = 1;
-    LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized (day=%s, night=%s)", day_ini, night_ini);
+    LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized: day sat[0]=%u nr_fine[0]=%u gain_max=%u ccm_op=%d",
+           g_day.sat[0], g_day.nr_fine_str[0], g_day.ae_sys_gain_max, g_day.ccm_op_type);
+    LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized: night sat[0]=%u nr_fine[0]=%u gain_max=%u ccm_op=%d",
+           g_night.sat[0], g_night.nr_fine_str[0], g_night.ae_sys_gain_max, g_night.ccm_op_type);
     return 0;
 }
 
 int scene_set_day(void)
 {
     if (!g_initialized) return -1;
-    LOGGER(LOGGER_LEVEL_INFO, "[scene] applying day scene");
+    LOGGER(LOGGER_LEVEL_INFO, "[scene] applying day scene (sat[0]=%u)", g_day.sat[0]);
     apply_scene(&g_day);
     return 0;
 }
@@ -333,7 +395,7 @@ int scene_set_day(void)
 int scene_set_night(void)
 {
     if (!g_initialized) return -1;
-    LOGGER(LOGGER_LEVEL_INFO, "[scene] applying night scene");
+    LOGGER(LOGGER_LEVEL_INFO, "[scene] applying night scene (sat[0]=%u)", g_night.sat[0]);
     apply_scene(&g_night);
     return 0;
 }
