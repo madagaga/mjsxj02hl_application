@@ -2817,12 +2817,17 @@ int local_sdk_video_set_night_mode() {
    to switch to night, and DAY_CONSEC_THRESHOLD consecutive readings above DAY_LUM_THRESH
    to switch back to day. Avoids flapping in transitional light conditions. */
 #define NIGHT_LUM_THRESH        30   /* u8AveLum below this → candidate for night */
-#define DAY_LUM_THRESH          35   /* u8AveLum above this → candidate for day.
-                                      * With IRCF open + IR LEDs on in daytime,
-                                      * lum stabilises at ~43; keeping threshold
-                                      * below that allows recovery to day mode. */
+#define DAY_LUM_THRESH          60   /* u8AveLum above this → candidate for day.
+                                      * Observed values: ~6 in day mode (IRCF closed),
+                                      * ~39 in night mode (IRCF open + IR LEDs on).
+                                      * Threshold must be above 39 to avoid oscillation:
+                                      * if the threshold were lower, lum=39 in night mode
+                                      * would trigger day → LEDs off → lum=6 → night → loop. */
 #define NIGHT_CONSEC_THRESHOLD  3    /* consecutive dark samples required           */
 #define DAY_CONSEC_THRESHOLD    3    /* consecutive bright samples required         */
+/* After a day/night transition the IRCF motor moves and the AE needs time to
+ * re-converge. Skip sampling for this many seconds after each transition. */
+#define TRANSITION_SETTLE_S     15
 
 static void *night_light_thread(void *arg) {
     (void)arg;
@@ -2831,8 +2836,7 @@ static void *night_light_thread(void *arg) {
     int consec_day    = 0;
 
     /* Wait for ISP AE to converge before starting detection.
-     * u8AveLum is ~0 for the first few seconds after ISP start,
-     * which would falsely trigger night mode. */
+     * u8AveLum reads ~0 for the first few seconds after ISP start. */
     usleep(8000000); /* 8 seconds */
 
     while (g_nightLightRun) {
@@ -2858,13 +2862,15 @@ static void *night_light_thread(void *arg) {
         if (last_state == 1 && consec_night >= NIGHT_CONSEC_THRESHOLD) {
             last_state   = 0; /* NIGHT_MODE_STATE_NIGHTTIME */
             consec_night = 0;
-            sdk_log("[sdk][night] ISP AE → night (lum=%u)\n", lum);
+            sdk_log("[sdk][night] ISP AE  night (lum=%u)\n", lum);
             if (g_nightStateCb) g_nightStateCb(0);
+            usleep((unsigned int)TRANSITION_SETTLE_S * 1000000u);
         } else if (last_state == 0 && consec_day >= DAY_CONSEC_THRESHOLD) {
             last_state = 1; /* NIGHT_MODE_STATE_DAYTIME */
             consec_day = 0;
-            sdk_log("[sdk][night] ISP AE → day (lum=%u)\n", lum);
+            sdk_log("[sdk][night] ISP AE  day (lum=%u)\n", lum);
             if (g_nightStateCb) g_nightStateCb(1);
+            usleep((unsigned int)TRANSITION_SETTLE_S * 1000000u);
         }
 
         usleep(1000000); /* sample every 1 s */
