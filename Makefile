@@ -7,7 +7,7 @@ LDPATH = /opt/hisi-linux/x86-arm/arm-himix100-linux/target/usr/app/lib
 CC  = $(CROSS_COMPILE)gcc
 CXX = $(CROSS_COMPILE)g++
 
-LDFLAGS = -pthread -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lsceneauto -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lsns_f22 -lpaho-mqtt3c -lyyjson -lrtspserver -lstdc++
+LDFLAGS = -pthread -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lsceneauto -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lpaho-mqtt3c -lyyjson -lrtspserver -lstdc++
 
 OUTPUT = ./bin
 LIBDIR = ./lib
@@ -90,7 +90,7 @@ librtspserver.so:
 # APPLICATION OBJECTS #
 #######################
 
-objects: logger.o localsdk.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o sensor.o board.o
+objects: logger.o localsdk.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o sensor.o board.o jxf22_cmos.o jxf22_ctl.o
 
 logger.o: ./logger/logger.c
 	$(CC) $(CCFLAGS) -c ./logger/logger.c -o $(OUTPUT)/objects/logger.o
@@ -139,6 +139,12 @@ sensor.o: ./localsdk/platform/sensor_jxf22.c
 
 board.o: ./localsdk/platform/board_mjsxj02hl.c
 	$(CC) $(CCFLAGS) -c ./localsdk/platform/board_mjsxj02hl.c -o $(OUTPUT)/objects/board.o
+
+jxf22_cmos.o: ./localsdk/sns/jxf22_cmos.c
+	$(CC) $(CCFLAGS) -I./localsdk/sns -c ./localsdk/sns/jxf22_cmos.c -o $(OUTPUT)/objects/jxf22_cmos.o
+
+jxf22_ctl.o: ./localsdk/sns/jxf22_sensor_ctl.c
+	$(CC) $(CCFLAGS) -I./localsdk/sns -c ./localsdk/sns/jxf22_sensor_ctl.c -o $(OUTPUT)/objects/jxf22_ctl.o
 
 clean:
 	-rm -rf $(OUTPUT)/*

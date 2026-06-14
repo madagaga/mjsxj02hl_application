@@ -7,7 +7,7 @@
 
 #include "platform.h"
 
-/* Sensor object exported by libsns_f22.so */
+/* Sensor object defined in localsdk/sns/jxf22_cmos.c (OSS port of libsns_f22.so) */
 extern ISP_SNS_OBJ_S stSnsSoiSensorObj;
 
 static const sensor_cfg_t g_sensor_jxf22 = {

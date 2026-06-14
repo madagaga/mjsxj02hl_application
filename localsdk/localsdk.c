@@ -1010,6 +1010,13 @@ static int sdk_video_sensor_register(void) {
     strncpy(stAeLib.acLibName,  HI_AE_LIB_NAME,  sizeof(stAeLib.acLibName)  - 1);
     strncpy(stAwbLib.acLibName, HI_AWB_LIB_NAME, sizeof(stAwbLib.acLibName) - 1);
 
+    /* Tell the sensor driver which I2C bus to use (i2c-0 for JXF22 on MJSXJ02HL). */
+    if (g_sensor_cfg->p_sns_obj->pfnSetBusInfo) {
+        ISP_SNS_COMMBUS_U unBus;
+        unBus.s8I2cDev = 0;
+        g_sensor_cfg->p_sns_obj->pfnSetBusInfo(0, unBus);
+    }
+
     if (!g_sensor_cfg->p_sns_obj->pfnRegisterCallback) {
         sdk_log("[sdk][video] sensor pfnRegisterCallback is NULL\n");
         return LOCALSDK_ERROR;
