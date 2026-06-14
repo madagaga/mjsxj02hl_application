@@ -150,8 +150,10 @@ static HI_VOID cmos_slow_framerate_set(VI_PIPE ViPipe, HI_U32 u32FullLines,
 static HI_VOID cmos_inttime_update(VI_PIPE ViPipe, HI_U32 u32IntTime)
 {
     (void)ViPipe;
-    g_stSnsRegsInfo.astI2cData[SNS_REG_EXPO_L].u32Data = u32IntTime & 0xff;
-    g_stSnsRegsInfo.astI2cData[SNS_REG_EXPO_H].u32Data = (u32IntTime >> 8) & 0xff;
+    g_stSnsRegsInfo.astI2cData[SNS_REG_EXPO_L].u32Data  = u32IntTime & 0xff;
+    g_stSnsRegsInfo.astI2cData[SNS_REG_EXPO_L].bUpdate  = HI_TRUE;
+    g_stSnsRegsInfo.astI2cData[SNS_REG_EXPO_H].u32Data  = (u32IntTime >> 8) & 0xff;
+    g_stSnsRegsInfo.astI2cData[SNS_REG_EXPO_H].bUpdate  = HI_TRUE;
 }
 
 /* Analog gain table: sensor AGC register value = (gain_lin>>6) mapped to 5-bit field. */
@@ -178,7 +180,8 @@ static HI_VOID cmos_gains_update(VI_PIPE ViPipe,
 {
     (void)ViPipe;
     (void)u32Dgain; /* sensor has no digital gain register */
-    g_stSnsRegsInfo.astI2cData[SNS_REG_AGC].u32Data = u32Again & 0xff;
+    g_stSnsRegsInfo.astI2cData[SNS_REG_AGC].u32Data  = u32Again & 0xff;
+    g_stSnsRegsInfo.astI2cData[SNS_REG_AGC].bUpdate  = HI_TRUE;
 }
 
 static HI_S32 cmos_init_ae_exp_function(AE_SENSOR_EXP_FUNC_S *pstExpFuncs)

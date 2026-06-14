@@ -77,7 +77,7 @@ static const sensor_cfg_t g_sensor_jxf22 = {
         .stWndRect    = {0, 0, 1920, 1080},
         .stSnsSize    = {1920, 1080},
         .f32FrameRate = 30.0f,   /* sensor native; app retimes to 20 fps via VPSS */
-        .enBayer      = BAYER_BGGR,  /* TODO: confirm on real image (color cast check) */
+        .enBayer      = BAYER_BGGR,  /* confirmed correct with vendor libsns_f22.so */
         .enWDRMode    = WDR_MODE_NONE,
         .u8SnsMode    = 0
     },
