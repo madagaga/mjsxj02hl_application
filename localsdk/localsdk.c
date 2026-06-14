@@ -1087,7 +1087,7 @@ static int sdk_video_isp_init(int fps) {
                  g_board_cfg->scene_ini_dir);
         snprintf(night_ini, sizeof(night_ini), "%s/config_product_scene_1080p20_linear_ir.ini",
                  g_board_cfg->scene_ini_dir);
-        if (scene_init(day_ini, night_ini) == 0)
+        if (scene_init(day_ini, night_ini, g_sensor_cfg ? g_sensor_cfg->sensor_fps : 20) == 0)
             scene_set_day();
     }
 
