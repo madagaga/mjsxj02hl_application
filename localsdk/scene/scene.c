@@ -302,16 +302,20 @@ int scene_init(const char *day_ini, const char *night_ini)
     memset(&g_night, 0, sizeof(g_night));
 
     int ret = ini_parse(day_ini, scene_handler, &g_day);
-    if (ret != 0) {
-        LOGGER(LOGGER_LEVEL_ERROR, "[scene] failed to parse day INI %s (ret=%d)", day_ini, ret);
+    if (ret < 0) {
+        LOGGER(LOGGER_LEVEL_ERROR, "[scene] cannot open day INI %s (ret=%d)", day_ini, ret);
         return -1;
     }
+    if (ret > 0)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] day INI %s: parse error at line %d (long value lines — ignored)", day_ini, ret);
 
     ret = ini_parse(night_ini, scene_handler, &g_night);
-    if (ret != 0) {
-        LOGGER(LOGGER_LEVEL_ERROR, "[scene] failed to parse night INI %s (ret=%d)", night_ini, ret);
+    if (ret < 0) {
+        LOGGER(LOGGER_LEVEL_ERROR, "[scene] cannot open night INI %s (ret=%d)", night_ini, ret);
         return -1;
     }
+    if (ret > 0)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] night INI %s: parse error at line %d (long value lines — ignored)", night_ini, ret);
 
     g_initialized = 1;
     LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized (day=%s, night=%s)", day_ini, night_ini);
