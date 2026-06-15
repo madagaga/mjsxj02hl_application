@@ -75,7 +75,7 @@ typedef struct {
 static scene_params_t g_day;
 static scene_params_t g_night;
 static int g_initialized = 0;
-static HI_U32 g_sensor_fps = 20;
+static HI_U32 g_target_fps = 20;
 
 /* -------------------------------------------------------------------------
  * Value parsing helpers
@@ -202,7 +202,7 @@ static int scene_handler(void *user, const char *section,
 static void apply_ae(const scene_params_t *p)
 {
     /* Max integration time for the current sensor fps (one full frame period). */
-    HI_U32 max_int_time = (g_sensor_fps > 0) ? (1000000 / g_sensor_fps) : 50000;
+    HI_U32 max_int_time = (g_target_fps > 0) ? (1000000 / g_target_fps) : 50000;
 
     ISP_EXPOSURE_ATTR_S attr;
     HI_S32 ret = HI_MPI_ISP_GetExposureAttr(0, &attr);
@@ -212,7 +212,7 @@ static void apply_ae(const scene_params_t *p)
     }
 
     attr.u8AERunInterval                         = p->ae_run_interval;
-    attr.bAERouteExValid                         = HI_FALSE; /* TEST: disable route EX */
+    attr.bAERouteExValid                         = p->ae_route_ex_valid;
     attr.stAuto.stSysGainRange.u32Max            = p->ae_sys_gain_max;
     attr.stAuto.u8Speed                          = p->ae_speed;
     attr.stAuto.u8Tolerance                      = p->ae_tolerance;
@@ -222,7 +222,7 @@ static void apply_ae(const scene_params_t *p)
     ret = HI_MPI_ISP_SetExposureAttr(0, &attr);
     LOGGER(LOGGER_LEVEL_DEBUG,
            "[scene] SetExposureAttr fps=%u max_int=%u sys_gain_max=%u speed=%u tol=%u ret=0x%x",
-           g_sensor_fps, max_int_time, p->ae_sys_gain_max, p->ae_speed, p->ae_tolerance,
+           g_target_fps, max_int_time, p->ae_sys_gain_max, p->ae_speed, p->ae_tolerance,
            (unsigned)ret);
 
     if (p->ae_route_ex_valid && p->ae_route_node_num > 0) {
@@ -367,7 +367,7 @@ static void apply_scene(const scene_params_t *p)
  * Public API
  * ---------------------------------------------------------------------- */
 
-int scene_init(const char *day_ini, const char *night_ini, HI_U32 sensor_fps)
+int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
 {
     memset(&g_day,   0, sizeof(g_day));
     memset(&g_night, 0, sizeof(g_night));
@@ -389,7 +389,7 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 sensor_fps)
         LOGGER(LOGGER_LEVEL_WARNING, "[scene] night INI %s: parse stopped at line %d (long value — ignored)", night_ini, ret);
 
     g_initialized = 1;
-    g_sensor_fps = (sensor_fps > 0) ? sensor_fps : 20;
+    g_target_fps = (target_fps > 0) ? target_fps : 20;
     LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized: day sat[0]=%u nr_fine[0]=%u gain_max=%u ccm_op=%d",
            g_day.sat[0], g_day.nr_fine_str[0], g_day.ae_sys_gain_max, g_day.ccm_op_type);
     LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized: night sat[0]=%u nr_fine[0]=%u gain_max=%u ccm_op=%d",

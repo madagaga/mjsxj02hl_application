@@ -17,8 +17,10 @@ typedef struct {
     VI_PIPE_ATTR_S     vi_pipe_attr;
     ISP_PUB_ATTR_S     isp_pub_attr;   /* includes Bayer pattern, WDR mode, fps */
     ISP_SNS_OBJ_S     *p_sns_obj;      /* libsns_*.so sensor object */
-    HI_U32             sensor_fps;     /* application target framerate */
-    HI_U32             u32FullLinesStd; /* total sensor lines/frame at sensor_fps (VBI included) — for VPSS wrap buffer calculation */
+    HI_U32             u32FullLinesStd; /* total sensor lines/frame at native rate (VBI included) — for VPSS wrap buffer calculation */
+    /* Change the sensor's operating framerate by reprogramming VMAX via I2C.
+       Called once after ISP init with board_cfg_t.target_fps. */
+    HI_VOID          (*pfnSetFps)(HI_U32 fps);
 } sensor_cfg_t;
 
 /* All parameters that are specific to the camera board design (PCB/hardware).
@@ -46,6 +48,9 @@ typedef struct {
     HI_U32         vb_sub_blk_cnt;
     /* IVP .oms model path (sub-channel resolution must match model) */
     const char    *ivp_oms_path;
+    /* Board target framerate: fed to sensor_cfg_t.pfnSetFps after ISP init.
+       20fps is the product decision for MJSXJ02HL (larger VMAX → longer max IntTime). */
+    HI_U32         target_fps;
     /* Wrap buffer lines for VPSS chn0 ring mode.  If non-zero, used directly
        instead of HI_MPI_SYS_GetVPSSVENCWrapBufferLine (which gives the minimum;
        the original firmware hardcodes 416 for extra margin). */

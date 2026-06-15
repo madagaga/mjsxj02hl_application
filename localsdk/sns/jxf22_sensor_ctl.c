@@ -232,3 +232,15 @@ HI_VOID sensor_exit(VI_PIPE ViPipe)
     (void)ViPipe;
     sensor_i2c_exit();
 }
+
+HI_VOID sensor_set_fps(HI_U32 fps)
+{
+    HI_U32 vmax;
+    if (fps == 0) return;
+    vmax = (HI_U32)(VMAX_1080P30_LINEAR * 30) / fps;
+    if (vmax > FULL_LINES_MAX) vmax = FULL_LINES_MAX;
+    sensor_write_register(VMAX_ADDR_L, (HI_S32)(vmax & 0xff));
+    sensor_write_register(VMAX_ADDR_H, (HI_S32)((vmax >> 8) & 0xff));
+    printf("[sns][jxf22] set_fps %u: VMAX=%u (0x%04x) reg[0x22]=0x%02x reg[0x23]=0x%02x\n",
+           fps, vmax, vmax, vmax & 0xff, (vmax >> 8) & 0xff);
+}

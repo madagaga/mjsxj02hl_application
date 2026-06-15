@@ -10,6 +10,8 @@
 /* Sensor object defined in localsdk/sns/jxf22_cmos.c (OSS port of libsns_f22.so) */
 extern ISP_SNS_OBJ_S stSnsSoiSensorObj;
 
+#include "../sns/jxf22.h"
+
 static const sensor_cfg_t g_sensor_jxf22 = {
     .name = "SOI JXF22",
 
@@ -83,10 +85,10 @@ static const sensor_cfg_t g_sensor_jxf22 = {
     },
 
     .p_sns_obj       = &stSnsSoiSensorObj,
-    .sensor_fps      = 20,
     /* VMAX at sensor native rate (30fps). Used for VPSS wrap buffer line calculation
        which requires the sensor input rate to VIPROC, not the output fps. */
     .u32FullLinesStd = 1134,
+    .pfnSetFps       = sensor_set_fps,
 };
 
 const sensor_cfg_t *platform_get_sensor_cfg(void) {

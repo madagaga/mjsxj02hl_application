@@ -27,6 +27,7 @@ extern ISP_SNS_REGS_INFO_S g_stPreSnsRegsInfo;
 
 #define SENSOR_1080P_30FPS_MODE (1)
 #define VMAX_1080P30_LINEAR     (1134)
+#define VMAX_1080P20_LINEAR     (1701)  /* 1134 * 30 / 20 */
 #define FULL_LINES_MAX          (0xFFFF)
 
 /* Register addresses */
@@ -54,6 +55,9 @@ HI_S32 sensor_read_register(HI_S32 addr);
 HI_VOID sensor_linear_1080p30_init(HI_VOID);
 HI_VOID sensor_init(VI_PIPE ViPipe);
 HI_VOID sensor_exit(VI_PIPE ViPipe);
+
+/* Reprogram VMAX registers to change operating fps (call after sensor_init). */
+HI_VOID sensor_set_fps(HI_U32 fps);
 
 #ifdef __cplusplus
 }

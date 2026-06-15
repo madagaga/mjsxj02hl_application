@@ -24,6 +24,10 @@ static const board_cfg_t g_board_mjsxj02hl = {
     .default_mirror    = HI_TRUE,
     .default_flip      = HI_TRUE,
 
+    /* 20fps: board decision — larger VMAX (1701 vs 1134) allows 50ms max IntTime vs 33ms.
+       INI files are named *_1080p20_*, VB pool is sized for 20fps. */
+    .target_fps        = 20,
+
     /* Inner codec (hi3518ev300): dev 0 is the only valid audio device */
     .ai_dev = 0,
     .ao_dev = 0,

@@ -1081,16 +1081,6 @@ static int sdk_video_isp_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
-    if (g_board_cfg && g_board_cfg->scene_ini_dir) {
-        char day_ini[256], night_ini[256];
-        snprintf(day_ini, sizeof(day_ini), "%s/config_product_scene_1080p20_linear.ini",
-                 g_board_cfg->scene_ini_dir);
-        snprintf(night_ini, sizeof(night_ini), "%s/config_product_scene_1080p20_linear_ir.ini",
-                 g_board_cfg->scene_ini_dir);
-        if (scene_init(day_ini, night_ini, g_sensor_cfg ? g_sensor_cfg->sensor_fps : 20) == 0)
-            scene_set_day();
-    }
-
     return LOCALSDK_OK;
 }
 
@@ -1227,13 +1217,23 @@ int local_sdk_video_init(int fps) {
         return LOCALSDK_ERROR;
     }
 
+    /* Wait for ISP thread to call pfnCmosSensorInit and open the I2C bus.
+       pfnSetFps and pfnMirrorFlip both write I2C registers and need this. */
+    usleep(300000);
+
+    /* Reprogram sensor VMAX to board target fps. For MJSXJ02HL: 20fps → VMAX=1701
+       giving max IntTime=50ms vs 33ms at native 30fps. Must happen before scene_init
+       so the AE route EX IntTime cap matches the sensor hardware capability. */
+    if (g_sensor_cfg->pfnSetFps && g_board_cfg->target_fps > 0) {
+        g_sensor_cfg->pfnSetFps(g_board_cfg->target_fps);
+        sdk_log("[sdk][video] sensor pfnSetFps(%u) applied\n", g_board_cfg->target_fps);
+    }
+
     /* Apply sensor-level orientation correction via pfnMirrorFlip.
        The JXF22 on MJSXJ02HL is mounted 180°; correcting at the sensor (I2C)
-       lets all MPP stages (VPSS chn0+wrap included) keep bMirror=bFlip=FALSE.
-       Wait 300ms for the ISP thread to complete pfnCmosSensorInit first. */
+       lets all MPP stages (VPSS chn0+wrap included) keep bMirror=bFlip=FALSE. */
     if (g_board_cfg->default_mirror || g_board_cfg->default_flip) {
         ISP_SNS_MIRRORFLIP_TYPE_E eMirrorFlip;
-        usleep(300000);
         if (g_board_cfg->default_mirror && g_board_cfg->default_flip)
             eMirrorFlip = ISP_SNS_MIRROR_FLIP;
         else if (g_board_cfg->default_mirror)
@@ -1244,6 +1244,18 @@ int local_sdk_video_init(int fps) {
             g_sensor_cfg->p_sns_obj->pfnMirrorFlip(0, eMirrorFlip);
             sdk_log("[sdk][video] sensor pfnMirrorFlip(%d) applied\n", eMirrorFlip);
         }
+    }
+
+    /* Apply ISP scene parameters now that sensor is at target fps.
+       scene_init caps AE route EX IntTime to 1000000/target_fps µs. */
+    if (g_board_cfg->scene_ini_dir) {
+        char day_ini[256], night_ini[256];
+        snprintf(day_ini, sizeof(day_ini), "%s/config_product_scene_1080p20_linear.ini",
+                 g_board_cfg->scene_ini_dir);
+        snprintf(night_ini, sizeof(night_ini), "%s/config_product_scene_1080p20_linear_ir.ini",
+                 g_board_cfg->scene_ini_dir);
+        if (scene_init(day_ini, night_ini, g_board_cfg->target_fps) == 0)
+            scene_set_day();
     }
 
     /* VPSS group */
