@@ -11,6 +11,7 @@
  * Sections handled from each scene INI file:
  *   [static_ae]        — exposure interval, route-ex flag, gain cap, speed/tolerance/delay
  *   [static_aerouteex] — AE route EX node table (IntTime, AGain, DGain, IspDGain)
+ *   [static_awb]       — white-balance calibration (static WB, curve, Cr/Cb track)
  *   [static_ccm]       — CCM op-type, manual matrix, auto color-temp / matrix tables
  *   [static_saturation]— per-ISO saturation curve
  *   [static_nr]        — per-ISO NR fine strength and coring weight
@@ -53,6 +54,18 @@ typedef struct {
     HI_U32  ae_route_again[ISP_AE_ROUTE_EX_MAX_NODES];
     HI_U32  ae_route_dgain[ISP_AE_ROUTE_EX_MAX_NODES];
     HI_U32  ae_route_isp_dgain[ISP_AE_ROUTE_EX_MAX_NODES];
+
+    /* [static_awb] — white-balance calibration */
+    HI_BOOL awb_present;
+    HI_U16  awb_static_wb[ISP_BAYER_CHN_NUM];
+    HI_S32  awb_curve[AWB_CURVE_PARA_NUM];
+    HI_U16  awb_speed;
+    HI_U16  awb_low_color_temp;
+    HI_U16  awb_cr_max[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  awb_cr_min[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  awb_cb_max[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  awb_cb_min[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_BOOL awb_luma_hist_en;
 
     /* [static_ccm] */
     int     ccm_op_type;   /* 0 = auto, 1 = manual */
@@ -124,6 +137,15 @@ static int parse_u8_arr(const char *s, HI_U8 *out, int max_n)
     return n;
 }
 
+static int parse_s32_arr(const char *s, HI_S32 *out, int max_n)
+{
+    char *buf = (char *)s;
+    int n = 0;
+    for (char *tok = strtok(buf, ","); tok && n < max_n; tok = strtok(NULL, ","))
+        out[n++] = (HI_S32)strtol(tok, NULL, 10);
+    return n;
+}
+
 /* -------------------------------------------------------------------------
  * inih callback — populates one scene_params_t from a scene INI file
  * ---------------------------------------------------------------------- */
@@ -160,6 +182,27 @@ static int scene_handler(void *user, const char *section,
             parse_u32_arr(v, p->ae_route_dgain,    ISP_AE_ROUTE_EX_MAX_NODES);
         else if (strcasecmp(name, "RouteEXISPDGain") == 0)
             parse_u32_arr(v, p->ae_route_isp_dgain, ISP_AE_ROUTE_EX_MAX_NODES);
+
+    } else if (strcasecmp(section, "static_awb") == 0) {
+        p->awb_present = HI_TRUE;
+        if      (strcasecmp(name, "AutoStaticWb") == 0)
+            parse_u16_arr(v, p->awb_static_wb, ISP_BAYER_CHN_NUM);
+        else if (strcasecmp(name, "AutoCurvePara") == 0)
+            parse_s32_arr(v, p->awb_curve, AWB_CURVE_PARA_NUM);
+        else if (strcasecmp(name, "AutoSpeed") == 0)
+            p->awb_speed = (HI_U16)strtoul(v, NULL, 10);
+        else if (strcasecmp(name, "AutoLowColorTemp") == 0)
+            p->awb_low_color_temp = (HI_U16)strtoul(v, NULL, 10);
+        else if (strcasecmp(name, "AutoCrMax") == 0)
+            parse_u16_arr(v, p->awb_cr_max, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "AutoCrMin") == 0)
+            parse_u16_arr(v, p->awb_cr_min, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "AutoCbMax") == 0)
+            parse_u16_arr(v, p->awb_cb_max, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "AutoCbMin") == 0)
+            parse_u16_arr(v, p->awb_cb_min, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "LumaHistEnable") == 0)
+            p->awb_luma_hist_en = atoi(v) ? HI_TRUE : HI_FALSE;
 
     } else if (strcasecmp(section, "static_ccm") == 0) {
         if (strcasecmp(name, "CCMOpType") == 0)
@@ -245,6 +288,45 @@ static void apply_ae(const scene_params_t *p)
                route.astRouteExNode[route.u32TotalNum - 1].u32IntTime,
                (unsigned)ret);
     }
+}
+
+/* Apply the white-balance calibration from [static_awb].
+ *
+ * Without this the auto-AWB algorithm runs on the ISP's default calibration
+ * (or the sensor cmos_get_awb_default() anchor), which does not match the JXF22
+ * factory calibration in the INI -> visible colour cast (green). We keep
+ * enOpType=AUTO and only patch the calibration fields (static WB reference,
+ * curve, Cr/Cb tracking) via Get->patch->Set so the rest of the AWB state and
+ * stManual are preserved. */
+static void apply_awb(const scene_params_t *p)
+{
+    if (!p->awb_present) return;
+
+    ISP_WB_ATTR_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetWBAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetWBAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
+
+    attr.enOpType = OP_TYPE_AUTO;
+    memcpy(attr.stAuto.au16StaticWB,  p->awb_static_wb, sizeof(p->awb_static_wb));
+    memcpy(attr.stAuto.as32CurvePara, p->awb_curve,     sizeof(p->awb_curve));
+    if (p->awb_speed)          attr.stAuto.u16Speed         = p->awb_speed;
+    if (p->awb_low_color_temp) attr.stAuto.u16LowColorTemp  = p->awb_low_color_temp;
+
+    attr.stAuto.stCbCrTrack.bEnable = HI_TRUE;
+    memcpy(attr.stAuto.stCbCrTrack.au16CrMax, p->awb_cr_max, sizeof(p->awb_cr_max));
+    memcpy(attr.stAuto.stCbCrTrack.au16CrMin, p->awb_cr_min, sizeof(p->awb_cr_min));
+    memcpy(attr.stAuto.stCbCrTrack.au16CbMax, p->awb_cb_max, sizeof(p->awb_cb_max));
+    memcpy(attr.stAuto.stCbCrTrack.au16CbMin, p->awb_cb_min, sizeof(p->awb_cb_min));
+    attr.stAuto.stLumaHist.bEnable  = p->awb_luma_hist_en;
+
+    ret = HI_MPI_ISP_SetWBAttr(0, &attr);
+    LOGGER(LOGGER_LEVEL_DEBUG,
+           "[scene] SetWBAttr staticWB=[%u,%u,%u,%u] speed=%u lowCT=%u ret=0x%x",
+           p->awb_static_wb[0], p->awb_static_wb[1], p->awb_static_wb[2], p->awb_static_wb[3],
+           p->awb_speed, p->awb_low_color_temp, (unsigned)ret);
 }
 
 static void apply_ccm(const scene_params_t *p)
@@ -359,6 +441,7 @@ static void apply_ca(const scene_params_t *p)
 static void apply_scene(const scene_params_t *p)
 {
     apply_ae(p);
+    apply_awb(p);
     apply_ccm(p);
     apply_saturation(p);
     apply_nr(p);
@@ -392,8 +475,10 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
 
     g_initialized = 1;
     g_target_fps = (target_fps > 0) ? target_fps : 20;
-    LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized: day sat[0]=%u nr_fine[0]=%u gain_max=%u ccm_op=%d",
-           g_day.sat[0], g_day.nr_fine_str[0], g_day.ae_sys_gain_max, g_day.ccm_op_type);
+    LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized: day sat[0]=%u nr_fine[0]=%u gain_max=%u ccm_op=%d awb=%d staticWB=[%u,%u,%u,%u]",
+           g_day.sat[0], g_day.nr_fine_str[0], g_day.ae_sys_gain_max, g_day.ccm_op_type,
+           (int)g_day.awb_present,
+           g_day.awb_static_wb[0], g_day.awb_static_wb[1], g_day.awb_static_wb[2], g_day.awb_static_wb[3]);
     LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized: night sat[0]=%u nr_fine[0]=%u gain_max=%u ccm_op=%d",
            g_night.sat[0], g_night.nr_fine_str[0], g_night.ae_sys_gain_max, g_night.ccm_op_type);
     return 0;
