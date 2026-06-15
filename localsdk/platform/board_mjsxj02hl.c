@@ -101,19 +101,27 @@ static void board_apply_mode(HI_BOOL is_night)
  * Board lifecycle callbacks (wired into board_cfg_t)
  * ---------------------------------------------------------------------- */
 
-/* Board owns and configures its sensor. The orientation (mirror/flip) comes from
-   the app (default in .conf = 180° correction for the PCB mount, user-overridable);
-   the board forwards it together with its target fps to the sensor module. */
+/* Physical PCB mount: the JXF22 is rotated 180°, so the board's BASE sensor
+   orientation is mirror+flip. The ISP Bayer phase (BAYER_BGGR) is calibrated for
+   this mounted readout — running the sensor "normal" both flips the image AND
+   corrupts colour (wrong Bayer phase → green tint). The app flip/mirror toggle
+   relative to this base (XOR): with .conf flip=0/mirror=0 the image is upright. */
+#define MJSXJ02HL_MOUNT_MIRROR  1   /* 180° mount */
+#define MJSXJ02HL_MOUNT_FLIP    1
+
+/* Board owns and configures its sensor: composes the app-requested orientation
+   over the physical mount, adds its target fps, and brings the sensor up. */
 static HI_S32 mjsxj02hl_bringup_sensor(HI_BOOL mirror, HI_BOOL flip)
 {
     sensor_config_t cfg = {
         .fps    = BOARD_TARGET_FPS,
-        .mirror = mirror,
-        .flip   = flip,
+        .mirror = (HI_BOOL)(MJSXJ02HL_MOUNT_MIRROR ^ (mirror != 0)),
+        .flip   = (HI_BOOL)(MJSXJ02HL_MOUNT_FLIP   ^ (flip   != 0)),
     };
     sensor_jxf22_configure(&cfg);
-    LOGGER(LOGGER_LEVEL_INFO, "[board][mjsxj02hl] bringup sensor: fps=%u mirror=%d flip=%d",
-           BOARD_TARGET_FPS, (int)mirror, (int)flip);
+    LOGGER(LOGGER_LEVEL_INFO,
+           "[board][mjsxj02hl] bringup sensor: fps=%u app(mirror=%d flip=%d) -> sensor(mirror=%d flip=%d)",
+           BOARD_TARGET_FPS, (int)mirror, (int)flip, (int)cfg.mirror, (int)cfg.flip);
     return sensor_jxf22_bringup();
 }
 
