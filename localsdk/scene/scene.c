@@ -249,6 +249,17 @@ static void apply_ae(const scene_params_t *p)
 
 static void apply_ccm(const scene_params_t *p)
 {
+    /* Auto mode (ccm_op=0): ISP/AWB library manages CCM from jxf22_cmos.c
+       cmos_get_awb_default() tables — do not call SetCCMAttr.
+       The day INI has no ManualCCMTable so stManual.au16CCM would be all-zeros.
+       Passing a zero stManual corrupts the ISP color pipeline even when
+       enOpType=OP_TYPE_AUTO (the ISP uses stManual internally). */
+    if (p->ccm_op_type == 0) {
+        LOGGER(LOGGER_LEVEL_DEBUG, "[scene] CCM auto — ISP/AWB manages CCM, no SetCCMAttr");
+        return;
+    }
+
+    /* Manual mode (ccm_op=1): night grayscale — force identity CCM matrix. */
     ISP_COLORMATRIX_ATTR_S attr;
     HI_S32 ret = HI_MPI_ISP_GetCCMAttr(0, &attr);
     if (ret != HI_SUCCESS) {
@@ -256,25 +267,16 @@ static void apply_ccm(const scene_params_t *p)
         return;
     }
 
-    attr.enOpType = (p->ccm_op_type == 0) ? OP_TYPE_AUTO : OP_TYPE_MANUAL;
+    attr.enOpType = OP_TYPE_MANUAL;
+    attr.stManual.bSatEn = HI_FALSE;
     memcpy(attr.stManual.au16CCM, p->ccm_manual, sizeof(p->ccm_manual));
-
-    /* Clamp tab_num to ISP accepted range [3, CCM_MATRIX_NUM]. */
-    HI_U16 tab_num = p->ccm_tab_num;
-    if (tab_num < 3) tab_num = 3;
-    if (tab_num > CCM_MATRIX_NUM) tab_num = CCM_MATRIX_NUM;
-    attr.stAuto.u16CCMTabNum = tab_num;
-
-    for (int i = 0; i < tab_num; i++) {
-        attr.stAuto.astCCMTab[i].u16ColorTemp = p->ccm_color_temp[i];
-        memcpy(attr.stAuto.astCCMTab[i].au16CCM, p->ccm_auto[i],
-               CCM_MATRIX_SIZE * sizeof(HI_U16));
-    }
 
     ret = HI_MPI_ISP_SetCCMAttr(0, &attr);
     if (ret != HI_SUCCESS)
-        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetCCMAttr op=%d failed 0x%x",
-               p->ccm_op_type, (unsigned)ret);
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetCCMAttr manual failed 0x%x", (unsigned)ret);
+    else
+        LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetCCMAttr manual OK ccm[0]=%u ccm[4]=%u ccm[8]=%u",
+               p->ccm_manual[0], p->ccm_manual[4], p->ccm_manual[8]);
 }
 
 /* Apply per-ISO saturation curve AND the CSC-level saturation together.

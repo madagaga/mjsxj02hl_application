@@ -9,6 +9,10 @@ extern "C"{
 #include <stdint.h>
 #include <time.h>
 
+/* Board sizing constants (single source of truth for the board+sensor couple).
+   Resolved at compile time; provides BOARD_TARGET_FPS used below. */
+#include "platform/board_mjsxj02hl.h"
+
 /********************
        GENERAL
 ********************/
@@ -61,7 +65,10 @@ int SAMPLE_COMM_SYS_GetPicSize(int resolution, LOCALSDK_PICTURE_SIZE *size);
 #define LOCALSDK_VIDEO_PRIMARY_FRAMESIZE       327680
 #define LOCALSDK_VIDEO_SECONDARY_FRAMESIZE     81920
 
-#define LOCALSDK_VIDEO_FRAMERATE               20
+/* Stream output framerate = the board's sensor target fps (single source).
+   Used by VENC (video.c) and RTP timestamping (rtsp.c); must match the real
+   framerate or A/V sync / playback speed is wrong. */
+#define LOCALSDK_VIDEO_FRAMERATE               BOARD_TARGET_FPS
 
 #define LOCALSDK_VIDEO_RCMODE_CONSTANT_BITRATE 0
 #define LOCALSDK_VIDEO_RCMODE_CONSTANT_QUALITY 1
@@ -98,8 +105,9 @@ typedef struct {
     uint32_t reserved;      // Reserved/padding
 } LOCALSDK_VIDEO_OPTIONS;
 
-// Init video
-int local_sdk_video_init(int fps);
+// Init video (flip/mirror are the app-requested orientation, applied at the
+// sensor by the board; default in .conf corrects the 180° PCB mount).
+int local_sdk_video_init(int fps, int flip, int mirror);
 
 // Create video
 int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options);
@@ -371,29 +379,8 @@ int local_sdk_setup_keydown_set_callback(int timeout, int (*callback)());
      NIGHT MODE
 ********************/
 
-// Color image
-int local_sdk_video_set_daytime_mode();
-
-// Grayscale image
-int local_sdk_video_set_night_mode();
-
-// Enable auto night mode
+// Start auto luma polling thread (mode=2); board owns state machine
 int local_sdk_auto_night_light();
-
-// Enable manual night mode
-int local_sdk_open_night_light();
-
-// Disable manual night mode
-int local_sdk_close_night_light();
-
-// Set night mode state callback
-int local_sdk_night_state_set_callback(int (*callback)(int state));
-
-// Opet IR-cut filter
-int local_sdk_open_ircut();
-
-// Close IR-cut filter
-int local_sdk_close_ircut();
 
 #ifdef __cplusplus
 }

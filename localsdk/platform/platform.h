@@ -2,32 +2,47 @@
 #define _PLATFORM_H_
 
 #include "hi_type.h"
-#include "hi_mipi.h"
-#include "hi_comm_vi.h"
-#include "hi_comm_isp.h"
-#include "hi_sns_ctrl.h"
-#include "hi_comm_aio.h"
+#include "hi_comm_vi.h"    /* VI_DEV / VI_PIPE / VI_CHN */
+#include "hi_comm_aio.h"   /* AUDIO_DEV */
 
-/* All parameters that are specific to the image sensor fitted on the board.
-   Values come from the sensor datasheet + the MIPI/VI/ISP bring-up sequence. */
+/* -------------------------------------------------------------------------
+ * Generic sensor configuration pushed by the board to its sensor.
+ * Carries only what the board/sensor couple may tune at bring-up time; the
+ * intrinsic sensor attributes (MIPI/VI/ISP) live inside the sensor module.
+ * ---------------------------------------------------------------------- */
 typedef struct {
-    const char        *name;
-    combo_dev_attr_t   mipi_attr;
-    VI_DEV_ATTR_S      vi_dev_attr;
-    VI_PIPE_ATTR_S     vi_pipe_attr;
-    ISP_PUB_ATTR_S     isp_pub_attr;   /* includes Bayer pattern, WDR mode, fps */
-    ISP_SNS_OBJ_S     *p_sns_obj;      /* libsns_*.so sensor object */
-    HI_U32             u32FullLinesStd; /* total sensor lines/frame at native rate (VBI included) — for VPSS wrap buffer calculation */
-    /* Change the sensor's operating framerate by reprogramming VMAX via I2C.
-       Called once after ISP init with board_cfg_t.target_fps. */
-    HI_VOID          (*pfnSetFps)(HI_U32 fps);
-} sensor_cfg_t;
+    HI_U32  fps;      /* target output fps (sensor VMAX retiming) */
+    HI_BOOL mirror;
+    HI_BOOL flip;
+} sensor_config_t;
 
-/* All parameters that are specific to the camera board design (PCB/hardware).
-   Swap this file to port to a different camera using the same sensor. */
+/* -------------------------------------------------------------------------
+ * Board interface — the ONLY thing localsdk consumes. localsdk is blind to
+ * the sensor: it never names the sensor type, only calls these callbacks and
+ * reads the BOARD_* compile-time constants (see board_*.h, included below).
+ *
+ * Two channels board -> localsdk:
+ *   - #define BOARD_*  : fixed sizing constants (VB/VPSS), compile-time.
+ *   - callbacks below  : runtime behaviour (sensor bring-up, day/night...).
+ * ---------------------------------------------------------------------- */
 typedef struct {
-    const char    *name;
-    /* GPIO pin numbers (sysfs index) */
+    const char          *name;
+
+    /* Sensor bring-up — the board owns and configures its sensor.
+       Pushes orientation (default = board's physical mount correction, may be
+       overridden by the app) + target fps, then brings up MIPI/VI/ISP. */
+    HI_S32 (*pfnBringupSensor)(HI_BOOL mirror, HI_BOOL flip);
+    /* Expose the VI handles created at bring-up (for VI<->VPSS bind/teardown). */
+    void   (*pfnGetVi)(VI_DEV *dev, VI_PIPE *pipe, VI_CHN *chn);
+    /* Tear down the sensor ISP (run thread + unregister), called at shutdown. */
+    void   (*pfnTeardownSensorIsp)(void);
+
+    /* Board lifecycle */
+    HI_S32 (*pfnInit)(void);       /* scene ISP params + GPIO initial state */
+    void   (*pfnOnLuma)(HI_U8 luma); /* day/night state machine (1s luma tick) */
+    void   (*pfnDeinit)(void);     /* GPIO cleared */
+
+    /* GPIO pin numbers (sysfs index); -1 = not present on this board */
     int            gpio_ir_led_a;
     int            gpio_ir_led_b;
     int            gpio_ircut_a;
@@ -36,32 +51,37 @@ typedef struct {
     int            gpio_led_blue;
     int            gpio_button_setup;
     int            gpio_photo_sensor;
-    int            gpio_ircut_step_us; /* delay between IR-cut motor pulses */
-    /* Sensor mounting orientation: base flip/mirror before user config XOR */
-    HI_BOOL        default_mirror;
-    HI_BOOL        default_flip;
+    int            gpio_ircut_step_us;
+
     /* Hisilicon audio device indices */
     AUDIO_DEV      ai_dev;
     AUDIO_DEV      ao_dev;
+
     /* VB pool block counts (tune to available MMZ) */
     HI_U32         vb_main_blk_cnt;
     HI_U32         vb_sub_blk_cnt;
+    /* Wrap buffer lines for VPSS chn0 ring mode (0 = disable wrap). */
+    HI_U32         vb_main_wrap_lines;
+
     /* IVP .oms model path (sub-channel resolution must match model) */
     const char    *ivp_oms_path;
-    /* Board target framerate: fed to sensor_cfg_t.pfnSetFps after ISP init.
-       20fps is the product decision for MJSXJ02HL (larger VMAX → longer max IntTime). */
-    HI_U32         target_fps;
-    /* Wrap buffer lines for VPSS chn0 ring mode.  If non-zero, used directly
-       instead of HI_MPI_SYS_GetVPSSVENCWrapBufferLine (which gives the minimum;
-       the original firmware hardcodes 416 for extra margin). */
-    HI_U32         vb_main_wrap_lines;
-    /* Directory containing scene auto INI files (config_cfgaccess_hd.ini, ...).
-       libsceneauto.so resolves this path from the binary location, so we chdir
-       here before calling sceneauto_init() to make the resolution work. */
-    const char    *scene_ini_dir;
 } board_cfg_t;
 
-const sensor_cfg_t *platform_get_sensor_cfg(void);
-const board_cfg_t  *platform_get_board_cfg(void);
+/* Board exported by board_*.c */
+const board_cfg_t *platform_get_board_cfg(void);
+
+/* Register a callback invoked by the board on day/night mode transitions.
+   night.c registers a function that publishes MQTT + toggles alarm detection.
+   Pass NULL to deregister. Only one callback is supported at a time. */
+void board_register_mode_change_cb(void (*cb)(HI_BOOL is_night));
+
+/* Force the board into a specific day/night mode immediately (bypasses luma
+   detection). Used by night.c for forced-mode config (night.mode=0/1). */
+void board_set_mode(HI_BOOL is_night);
+
+/* Active board header: provides BOARD_* sizing constants read by localsdk.
+   Included last so the board can relay its sensor's #defines. Swap this (and
+   the Makefile rules) to target a different camera. */
+#include "board_mjsxj02hl.h"
 
 #endif /* _PLATFORM_H_ */

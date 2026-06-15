@@ -134,17 +134,17 @@ homeassistant.o: ./mqtt/homeassistant.c
 rtsp.o: ./rtsp/rtsp.c
 	$(CC) $(CCFLAGS) -c ./rtsp/rtsp.c -o $(OUTPUT)/objects/rtsp.o
 
-sensor.o: ./localsdk/platform/sensor_jxf22.c
-	$(CC) $(CCFLAGS) -c ./localsdk/platform/sensor_jxf22.c -o $(OUTPUT)/objects/sensor.o
+sensor.o: ./localsdk/sensor/jxf/sensor_jxf22.c
+	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/sensor_jxf22.c -o $(OUTPUT)/objects/sensor.o
 
 board.o: ./localsdk/platform/board_mjsxj02hl.c
 	$(CC) $(CCFLAGS) -c ./localsdk/platform/board_mjsxj02hl.c -o $(OUTPUT)/objects/board.o
 
-jxf22_cmos.o: ./localsdk/sns/jxf22_cmos.c
-	$(CC) $(CCFLAGS) -I./localsdk/sns -c ./localsdk/sns/jxf22_cmos.c -o $(OUTPUT)/objects/jxf22_cmos.o
+jxf22_cmos.o: ./localsdk/sensor/jxf/jxf22_cmos.c
+	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_cmos.c -o $(OUTPUT)/objects/jxf22_cmos.o
 
-jxf22_ctl.o: ./localsdk/sns/jxf22_sensor_ctl.c
-	$(CC) $(CCFLAGS) -I./localsdk/sns -c ./localsdk/sns/jxf22_sensor_ctl.c -o $(OUTPUT)/objects/jxf22_ctl.o
+jxf22_ctl.o: ./localsdk/sensor/jxf/jxf22_sensor_ctl.c
+	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_sensor_ctl.c -o $(OUTPUT)/objects/jxf22_ctl.o
 
 scene.o: ./localsdk/scene/scene.c
 	$(CC) $(CCFLAGS) -I./configs/inih -I./logger -c ./localsdk/scene/scene.c -o $(OUTPUT)/objects/scene.o

@@ -47,7 +47,9 @@ bool video_init() {
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
     bool result = true;
     
-    if(result &= (local_sdk_video_init(LOCALSDK_VIDEO_FRAMERATE) == LOCALSDK_OK)) {
+    /* Orientation: app-requested flip/mirror (default in .conf corrects the 180°
+       PCB mount). Applied at the sensor by the board during bring-up. */
+    if(result &= (local_sdk_video_init(LOCALSDK_VIDEO_FRAMERATE, APP_CFG.video.flip, APP_CFG.video.mirror) == LOCALSDK_OK)) {
         LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_video_init()");
         // Init channel 0
         int primary_resolution_type;
