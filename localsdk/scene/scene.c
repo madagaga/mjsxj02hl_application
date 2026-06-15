@@ -315,13 +315,15 @@ static void apply_awb(const scene_params_t *p)
         return;
     }
 
-    attr.enOpType = OP_TYPE_AUTO;
+    /* Match HI_SCENE_SetStaticAWB (3516e ref): do NOT force enOpType, and do NOT
+       force stCbCrTrack.bEnable — only fill the calibration arrays. Forcing
+       Cr/Cb tracking ON constrained the AWB to a wrong white point (R-heavy gains
+       -> magenta). Leave the rest of the WB state as the ISP returned it. */
     memcpy(attr.stAuto.au16StaticWB,  p->awb_static_wb, sizeof(p->awb_static_wb));
     memcpy(attr.stAuto.as32CurvePara, p->awb_curve,     sizeof(p->awb_curve));
-    if (p->awb_speed)          attr.stAuto.u16Speed         = p->awb_speed;
-    if (p->awb_low_color_temp) attr.stAuto.u16LowColorTemp  = p->awb_low_color_temp;
+    attr.stAuto.u16Speed        = p->awb_speed;
+    attr.stAuto.u16LowColorTemp = p->awb_low_color_temp;
 
-    attr.stAuto.stCbCrTrack.bEnable = HI_TRUE;
     memcpy(attr.stAuto.stCbCrTrack.au16CrMax, p->awb_cr_max, sizeof(p->awb_cr_max));
     memcpy(attr.stAuto.stCbCrTrack.au16CrMin, p->awb_cr_min, sizeof(p->awb_cr_min));
     memcpy(attr.stAuto.stCbCrTrack.au16CbMax, p->awb_cb_max, sizeof(p->awb_cb_max));
@@ -464,8 +466,12 @@ static void apply_ca(const scene_params_t *p)
 static void apply_scene(const scene_params_t *p)
 {
     apply_ae(p);
-    apply_awb(p);
-    apply_ccm(p);
+    /* ISOLATION TEST (temporary): skip scene AWB/CCM to check whether the bare
+       sensor cmos defaults + auto-AWB converge to neutral colour. If neutral ->
+       scene apply_awb/ccm is the culprit; if still magenta -> the cmos AWB
+       calibration (jxf22_cmos.c) is the culprit. */
+    (void)apply_awb;
+    (void)apply_ccm;
     apply_saturation(p);
     apply_nr(p);
     apply_ca(p);
