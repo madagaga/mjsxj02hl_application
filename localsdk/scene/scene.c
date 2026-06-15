@@ -69,6 +69,8 @@ typedef struct {
 
     /* [static_ccm] */
     int     ccm_op_type;   /* 0 = auto, 1 = manual */
+    HI_BOOL ccm_iso_act_en;
+    HI_BOOL ccm_temp_act_en;
     HI_U16  ccm_manual[CCM_MATRIX_SIZE];
     HI_U16  ccm_tab_num;
     HI_U16  ccm_color_temp[CCM_MATRIX_NUM];
@@ -207,6 +209,10 @@ static int scene_handler(void *user, const char *section,
     } else if (strcasecmp(section, "static_ccm") == 0) {
         if (strcasecmp(name, "CCMOpType") == 0)
             p->ccm_op_type = atoi(v);
+        else if (strcasecmp(name, "ISOActEn") == 0)
+            p->ccm_iso_act_en = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "TempActEn") == 0)
+            p->ccm_temp_act_en = atoi(v) ? HI_TRUE : HI_FALSE;
         else if (strcasecmp(name, "ManualCCMTable") == 0)
             parse_u16_arr(v, p->ccm_manual, CCM_MATRIX_SIZE);
         else if (strcasecmp(name, "TotalNum") == 0)
@@ -331,17 +337,6 @@ static void apply_awb(const scene_params_t *p)
 
 static void apply_ccm(const scene_params_t *p)
 {
-    /* Auto mode (ccm_op=0): ISP/AWB library manages CCM from jxf22_cmos.c
-       cmos_get_awb_default() tables — do not call SetCCMAttr.
-       The day INI has no ManualCCMTable so stManual.au16CCM would be all-zeros.
-       Passing a zero stManual corrupts the ISP color pipeline even when
-       enOpType=OP_TYPE_AUTO (the ISP uses stManual internally). */
-    if (p->ccm_op_type == 0) {
-        LOGGER(LOGGER_LEVEL_DEBUG, "[scene] CCM auto — ISP/AWB manages CCM, no SetCCMAttr");
-        return;
-    }
-
-    /* Manual mode (ccm_op=1): night grayscale — force identity CCM matrix. */
     ISP_COLORMATRIX_ATTR_S attr;
     HI_S32 ret = HI_MPI_ISP_GetCCMAttr(0, &attr);
     if (ret != HI_SUCCESS) {
@@ -349,6 +344,34 @@ static void apply_ccm(const scene_params_t *p)
         return;
     }
 
+    /* Auto mode (ccm_op=0): apply the INI's per-color-temperature CCM tables.
+       Leaving CCM at the ISP/cmos defaults produced a magenta cast. We use
+       Get→patch→Set and only touch stAuto + enOpType, leaving stManual as the
+       ISP returned it (a zeroed stManual is what caused the historical magenta;
+       Get→patch→Set never zeroes it). */
+    if (p->ccm_op_type == 0) {
+        if (p->ccm_tab_num < 3) {   /* SDK requires u16CCMTabNum in [3,7] */
+            LOGGER(LOGGER_LEVEL_WARNING,
+                   "[scene] CCM auto: only %u tables (<3), leaving ISP default", p->ccm_tab_num);
+            return;
+        }
+        attr.enOpType            = OP_TYPE_AUTO;
+        attr.stAuto.bISOActEn    = p->ccm_iso_act_en;
+        attr.stAuto.bTempActEn   = p->ccm_temp_act_en;
+        attr.stAuto.u16CCMTabNum = p->ccm_tab_num;
+        for (HI_U16 i = 0; i < p->ccm_tab_num && i < CCM_MATRIX_NUM; i++) {
+            attr.stAuto.astCCMTab[i].u16ColorTemp = p->ccm_color_temp[i];
+            memcpy(attr.stAuto.astCCMTab[i].au16CCM, p->ccm_auto[i], sizeof(p->ccm_auto[i]));
+        }
+        ret = HI_MPI_ISP_SetCCMAttr(0, &attr);
+        LOGGER(LOGGER_LEVEL_DEBUG,
+               "[scene] SetCCMAttr auto num=%u ct[0]=%u ccm0=[%u,%u,%u] ret=0x%x",
+               p->ccm_tab_num, p->ccm_color_temp[0],
+               p->ccm_auto[0][0], p->ccm_auto[0][1], p->ccm_auto[0][2], (unsigned)ret);
+        return;
+    }
+
+    /* Manual mode (ccm_op=1): night grayscale — force identity CCM matrix. */
     attr.enOpType = OP_TYPE_MANUAL;
     attr.stManual.bSatEn = HI_FALSE;
     memcpy(attr.stManual.au16CCM, p->ccm_manual, sizeof(p->ccm_manual));
