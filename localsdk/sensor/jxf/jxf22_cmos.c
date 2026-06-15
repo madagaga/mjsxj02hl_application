@@ -362,11 +362,15 @@ static HI_S32 cmos_get_isp_black_level(VI_PIPE ViPipe,
     if (!pstBlackLevel) return HI_FAILURE;
 
     pstBlackLevel->bUpdate = HI_TRUE;
-    /* JXF22 black level ~64 for 10-bit RAW (pipeline shifts to 12-bit: ×4 = 256) */
-    pstBlackLevel->au16BlackLevel[0] = 256;
-    pstBlackLevel->au16BlackLevel[1] = 256;
-    pstBlackLevel->au16BlackLevel[2] = 256;
-    pstBlackLevel->au16BlackLevel[3] = 256;
+    /* JXF22 black level = 64 (R/Gr/Gb/B). Confirmed against the original firmware's
+       running ISP state (/proc/umap/isp "Black Level Actual" = 64) and the vendor
+       INI [dynamic_blc] (R/Gr/Gb/B = 64). The earlier "×4 = 256" assumption was
+       wrong and over-subtracted the black point, producing a magenta cast (the
+       extra subtraction is amplified per channel by the WB gains, blue most). */
+    pstBlackLevel->au16BlackLevel[0] = 64;
+    pstBlackLevel->au16BlackLevel[1] = 64;
+    pstBlackLevel->au16BlackLevel[2] = 64;
+    pstBlackLevel->au16BlackLevel[3] = 64;
 
     return HI_SUCCESS;
 }
