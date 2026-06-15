@@ -212,7 +212,7 @@ static void apply_ae(const scene_params_t *p)
     }
 
     attr.u8AERunInterval                         = p->ae_run_interval;
-    attr.bAERouteExValid                         = p->ae_route_ex_valid;
+    attr.bAERouteExValid                         = HI_FALSE; /* TEST: disable route EX */
     attr.stAuto.stSysGainRange.u32Max            = p->ae_sys_gain_max;
     attr.stAuto.u8Speed                          = p->ae_speed;
     attr.stAuto.u8Tolerance                      = p->ae_tolerance;
