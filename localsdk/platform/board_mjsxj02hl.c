@@ -113,11 +113,26 @@ static void board_apply_mode(HI_BOOL is_night)
    over the physical mount, adds its target fps, and brings the sensor up. */
 static HI_S32 mjsxj02hl_bringup_sensor(HI_BOOL mirror, HI_BOOL flip)
 {
+    /* Parse the scene INI first: the board pushes the camera's AWB calibration
+       (sensor.ini [static_awb]) into the sensor before registration. The sensor
+       has no hardcoded calibration — this is mandatory. */
+    HI_S32 ret = scene_init(MJSXJ02HL_SCENE_DAY, MJSXJ02HL_SCENE_NIGHT, BOARD_TARGET_FPS);
+    if (ret != 0) {
+        LOGGER(LOGGER_LEVEL_ERROR, "[board][mjsxj02hl] scene_init failed (%d)", ret);
+        return HI_FAILURE;
+    }
+
     sensor_config_t cfg = {
         .fps    = BOARD_TARGET_FPS,
         .mirror = (HI_BOOL)(MJSXJ02HL_MOUNT_MIRROR ^ (mirror != 0)),
         .flip   = (HI_BOOL)(MJSXJ02HL_MOUNT_FLIP   ^ (flip   != 0)),
     };
+    if (scene_get_awb_calib(&cfg.calib) != 0) {
+        LOGGER(LOGGER_LEVEL_ERROR,
+               "[board][mjsxj02hl] no AWB calib in scene INI [static_awb]");
+        return HI_FAILURE;
+    }
+
     sensor_jxf22_configure(&cfg);
     LOGGER(LOGGER_LEVEL_INFO,
            "[board][mjsxj02hl] bringup sensor: fps=%u app(mirror=%d flip=%d) -> sensor(mirror=%d flip=%d)",
@@ -145,11 +160,8 @@ static HI_S32 mjsxj02hl_init(void)
     board_gpio_write(b->gpio_ircut_a, 0);
     board_gpio_write(b->gpio_ircut_b, 0);
 
-    HI_S32 ret = scene_init(MJSXJ02HL_SCENE_DAY, MJSXJ02HL_SCENE_NIGHT, BOARD_TARGET_FPS);
-    if (ret != 0) {
-        LOGGER(LOGGER_LEVEL_ERROR, "[board][mjsxj02hl] scene_init failed (%d)", ret);
-        return HI_FAILURE;
-    }
+    /* scene_init() already ran in pfnBringupSensor (to push AWB calib pre-register).
+       Here we just apply the day profile. */
     scene_set_day();
     LOGGER(LOGGER_LEVEL_INFO, "[board][mjsxj02hl] init: scene day loaded, GPIO in day state");
     return HI_SUCCESS;

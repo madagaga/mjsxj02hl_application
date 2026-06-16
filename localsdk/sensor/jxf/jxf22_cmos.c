@@ -232,6 +232,20 @@ static AWB_AGC_TABLE_S g_stAwbAgcTable = {
 #define GOLDEN_RGAIN 0
 #define GOLDEN_BGAIN 0
 
+/* AWB calibration — MANDATORY: the board must push the camera-specific values
+ * parsed from sensor.ini [static_awb] (jxf22_cmos_set_awb_calib) BEFORE the
+ * sensor is registered. sensor_jxf22_bringup() refuses to start without them, so
+ * these zero placeholders are never used at runtime (they only satisfy C init).
+ * au16GainOffset <- AutoStaticWb, as32WbPara <- AutoCurvePara. */
+static HI_U16 g_awbGainOffset[4] = { 0 };
+static HI_S32 g_awbWbPara[6]     = { 0 };
+
+HI_VOID jxf22_cmos_set_awb_calib(const HI_U16 au16GainOffset[4], const HI_S32 as32WbPara[6])
+{
+    if (au16GainOffset) memcpy(g_awbGainOffset, au16GainOffset, sizeof(g_awbGainOffset));
+    if (as32WbPara)     memcpy(g_awbWbPara,     as32WbPara,     sizeof(g_awbWbPara));
+}
+
 static HI_S32 cmos_get_awb_default(VI_PIPE ViPipe, AWB_SENSOR_DEFAULT_S *pstAwbSnsDft)
 {
     (void)ViPipe;
@@ -244,16 +258,10 @@ static HI_S32 cmos_get_awb_default(VI_PIPE ViPipe, AWB_SENSOR_DEFAULT_S *pstAwbS
     /* Vendor-calibrated WB gains from sensor.ini AutoStaticWb="417,256,256,455".
      * Prior glutinium values (R=0x019C, B=0x01CB) were for a different integration
      * and caused a violet tint together with mismatched CCM tables. */
-    pstAwbSnsDft->au16GainOffset[0]   = 0x01A1; /* R  = 417/256 ≈ 1.63× */
-    pstAwbSnsDft->au16GainOffset[1]   = 0x0100; /* Gr = 1.0× */
-    pstAwbSnsDft->au16GainOffset[2]   = 0x0100; /* Gb = 1.0× */
-    pstAwbSnsDft->au16GainOffset[3]   = 0x01C7; /* B  = 455/256 ≈ 1.78× */
-    pstAwbSnsDft->as32WbPara[0]       = 49;
-    pstAwbSnsDft->as32WbPara[1]       = 207;
-    pstAwbSnsDft->as32WbPara[2]       = 0;
-    pstAwbSnsDft->as32WbPara[3]       = 160025;
-    pstAwbSnsDft->as32WbPara[4]       = 128;
-    pstAwbSnsDft->as32WbPara[5]       = -107016;
+    /* WB gain offset + Planckian curve: board-provided (sensor.ini [static_awb])
+       when pushed before registration, else sensor base defaults. */
+    memcpy(pstAwbSnsDft->au16GainOffset, g_awbGainOffset, sizeof(g_awbGainOffset));
+    memcpy(pstAwbSnsDft->as32WbPara,     g_awbWbPara,     sizeof(g_awbWbPara));
 
     pstAwbSnsDft->u16GoldenRgain = GOLDEN_RGAIN;
     pstAwbSnsDft->u16GoldenBgain = GOLDEN_BGAIN;

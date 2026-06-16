@@ -466,12 +466,8 @@ static void apply_ca(const scene_params_t *p)
 static void apply_scene(const scene_params_t *p)
 {
     apply_ae(p);
-    /* ISOLATION TEST (temporary): skip scene AWB/CCM to check whether the bare
-       sensor cmos defaults + auto-AWB converge to neutral colour. If neutral ->
-       scene apply_awb/ccm is the culprit; if still magenta -> the cmos AWB
-       calibration (jxf22_cmos.c) is the culprit. */
-    (void)apply_awb;
-    (void)apply_ccm;
+    apply_awb(p);
+    apply_ccm(p);
     apply_saturation(p);
     apply_nr(p);
     apply_ca(p);
@@ -510,6 +506,22 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
            g_day.awb_static_wb[0], g_day.awb_static_wb[1], g_day.awb_static_wb[2], g_day.awb_static_wb[3]);
     LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized: night sat[0]=%u nr_fine[0]=%u gain_max=%u ccm_op=%d",
            g_night.sat[0], g_night.nr_fine_str[0], g_night.ae_sys_gain_max, g_night.ccm_op_type);
+    return 0;
+}
+
+int scene_get_awb_calib(sensor_calib_t *out)
+{
+    if (!out) return -1;
+    out->awb_valid = HI_FALSE;
+    if (!g_initialized || !g_day.awb_present) return -1;
+
+    memcpy(out->awb_static_wb, g_day.awb_static_wb, sizeof(out->awb_static_wb));
+    memcpy(out->awb_curve,     g_day.awb_curve,     sizeof(out->awb_curve));
+    out->awb_valid = HI_TRUE;
+    LOGGER(LOGGER_LEVEL_INFO,
+           "[scene] awb calib for cmos: staticWB=[%u,%u,%u,%u] curve[3]=%d",
+           out->awb_static_wb[0], out->awb_static_wb[1], out->awb_static_wb[2],
+           out->awb_static_wb[3], (int)out->awb_curve[3]);
     return 0;
 }
 

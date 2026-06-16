@@ -59,6 +59,11 @@ HI_VOID sensor_exit(VI_PIPE ViPipe);
 /* Reprogram VMAX registers to change operating fps (call after sensor_init). */
 HI_VOID sensor_set_fps(HI_U32 fps);
 
+/* Push AWB calibration (sensor.ini [static_awb]) into the cmos. MUST be called
+   before the sensor is registered (cmos_get_awb_default). au16GainOffset <-
+   AutoStaticWb, as32WbPara <- AutoCurvePara. */
+HI_VOID jxf22_cmos_set_awb_calib(const HI_U16 au16GainOffset[4], const HI_S32 as32WbPara[6]);
+
 #ifdef __cplusplus
 }
 #endif

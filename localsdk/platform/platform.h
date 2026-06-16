@@ -10,10 +10,20 @@
  * Carries only what the board/sensor couple may tune at bring-up time; the
  * intrinsic sensor attributes (MIPI/VI/ISP) live inside the sensor module.
  * ---------------------------------------------------------------------- */
+/* Sensor calibration the board pushes from the scene INI into the sensor cmos
+   BEFORE registration (so the AWB library sees the camera-specific values at
+   cmos_get_awb_default time, instead of hardcoded ones). Source: [static_awb]. */
 typedef struct {
-    HI_U32  fps;      /* target output fps (sensor VMAX retiming) */
-    HI_BOOL mirror;
-    HI_BOOL flip;
+    HI_BOOL awb_valid;          /* HI_FALSE = keep sensor base defaults */
+    HI_U16  awb_static_wb[4];   /* AutoStaticWb  -> cmos au16GainOffset[4] */
+    HI_S32  awb_curve[6];       /* AutoCurvePara -> cmos as32WbPara[6]    */
+} sensor_calib_t;
+
+typedef struct {
+    HI_U32         fps;      /* target output fps (sensor VMAX retiming) */
+    HI_BOOL        mirror;
+    HI_BOOL        flip;
+    sensor_calib_t calib;    /* board-provided calibration (from scene INI) */
 } sensor_config_t;
 
 /* -------------------------------------------------------------------------
