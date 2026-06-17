@@ -106,8 +106,8 @@ static void board_apply_mode(HI_BOOL is_night)
    this mounted readout — running the sensor "normal" both flips the image AND
    corrupts colour (wrong Bayer phase → green tint). The app flip/mirror toggle
    relative to this base (XOR): with .conf flip=0/mirror=0 the image is upright. */
-#define MJSXJ02HL_MOUNT_MIRROR  0   /* TEST: sensor NORMAL to isolate orientation effect on colour */
-#define MJSXJ02HL_MOUNT_FLIP    0
+#define MJSXJ02HL_MOUNT_MIRROR  1   /* 180° mount */
+#define MJSXJ02HL_MOUNT_FLIP    1
 
 /* Board owns and configures its sensor: composes the app-requested orientation
    over the physical mount, adds its target fps, and brings the sensor up. */

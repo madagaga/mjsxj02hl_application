@@ -107,7 +107,11 @@ static const ISP_PUB_ATTR_S s_isp_pub_attr = {
     .stWndRect    = {0, 0, JXF22_WIDTH, JXF22_HEIGHT},
     .stSnsSize    = {JXF22_WIDTH, JXF22_HEIGHT},
     .f32FrameRate = (float)JXF22_FPS_NATIVE,  /* native; app retimes via VPSS */
-    .enBayer      = BAYER_BGGR,  /* confirmed correct with vendor libsns_f22.so */
+    /* Native (NORMAL readout) Bayer is BGGR (confirmed: NORMAL gives correct
+       colour). The board mounts the sensor 180° and applies MIRROR_FLIP at the
+       sensor, which rotates the Bayer phase 180°: BGGR -> RGGB. So the ISP must
+       be told RGGB to match the flipped readout (BGGR there gives a magenta cast). */
+    .enBayer      = BAYER_RGGB,
     .enWDRMode    = WDR_MODE_NONE,
     .u8SnsMode    = 0
 };
