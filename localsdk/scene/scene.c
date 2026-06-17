@@ -509,22 +509,6 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
     return 0;
 }
 
-int scene_get_awb_calib(sensor_calib_t *out)
-{
-    if (!out) return -1;
-    out->awb_valid = HI_FALSE;
-    if (!g_initialized || !g_day.awb_present) return -1;
-
-    memcpy(out->awb_static_wb, g_day.awb_static_wb, sizeof(out->awb_static_wb));
-    memcpy(out->awb_curve,     g_day.awb_curve,     sizeof(out->awb_curve));
-    out->awb_valid = HI_TRUE;
-    LOGGER(LOGGER_LEVEL_INFO,
-           "[scene] awb calib for cmos: staticWB=[%u,%u,%u,%u] curve[3]=%d",
-           out->awb_static_wb[0], out->awb_static_wb[1], out->awb_static_wb[2],
-           out->awb_static_wb[3], (int)out->awb_curve[3]);
-    return 0;
-}
-
 int scene_set_day(void)
 {
     if (!g_initialized) return -1;

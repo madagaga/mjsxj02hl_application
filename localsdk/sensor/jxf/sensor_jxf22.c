@@ -385,16 +385,9 @@ void sensor_jxf22_configure(const sensor_config_t *cfg) {
 }
 
 HI_S32 sensor_jxf22_bringup(void) {
-    /* AWB calibration is mandatory and must come from the board (sensor.ini
-       [static_awb]). Push it into the cmos BEFORE registration (sensor_isp_init
-       -> pfnRegisterCallback -> cmos_get_awb_default reads it). No hardcoded
-       fallback: refuse to start with an uncalibrated sensor. */
-    if (!s_cfg.calib.awb_valid) {
-        LOGGER(LOGGER_LEVEL_ERROR,
-               "[sensor][jxf22] missing AWB calibration — board must provide sensor.ini [static_awb]");
-        return HI_FAILURE;
-    }
-    jxf22_cmos_set_awb_calib(s_cfg.calib.awb_static_wb, s_cfg.calib.awb_curve);
+    /* The sensor's intrinsic AWB calibration lives in jxf22_cmos.c (extracted
+       from libsns_f22). The camera scene tuning (sensor.ini [static_awb]) is
+       applied separately at runtime by scene.c apply_awb. */
 
     /* Order matters: bring up MIPI + VI dev/pipe/chn FIRST, then ISP. The ISP
        attaches to the VI pipe, and the sensor i2c writes happen during ISP init

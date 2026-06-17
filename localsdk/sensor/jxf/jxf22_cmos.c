@@ -232,19 +232,15 @@ static AWB_AGC_TABLE_S g_stAwbAgcTable = {
 #define GOLDEN_RGAIN 0
 #define GOLDEN_BGAIN 0
 
-/* AWB calibration — MANDATORY: the board must push the camera-specific values
- * parsed from sensor.ini [static_awb] (jxf22_cmos_set_awb_calib) BEFORE the
- * sensor is registered. sensor_jxf22_bringup() refuses to start without them, so
- * these zero placeholders are never used at runtime (they only satisfy C init).
- * au16GainOffset <- AutoStaticWb, as32WbPara <- AutoCurvePara. */
-static HI_U16 g_awbGainOffset[4] = { 0 };
-static HI_S32 g_awbWbPara[6]     = { 0 };
-
-HI_VOID jxf22_cmos_set_awb_calib(const HI_U16 au16GainOffset[4], const HI_S32 as32WbPara[6])
-{
-    if (au16GainOffset) memcpy(g_awbGainOffset, au16GainOffset, sizeof(g_awbGainOffset));
-    if (as32WbPara)     memcpy(g_awbWbPara,     as32WbPara,     sizeof(g_awbWbPara));
-}
+/* AWB sensor calibration — INTRINSIC to the JXF22, extracted byte-exact from the
+ * vendor libsns_f22.so cmos_get_awb_default (Ghidra/objdump @0x1614). These are
+ * sensor-driver data (same for any camera with this sensor), NOT the camera
+ * scene tuning: the INI [static_awb] (AutoStaticWb/AutoCurvePara) is a separate
+ * thing applied at runtime via scene.c apply_awb (ISP_WB_ATTR_S). Our earlier
+ * values (gain offset B=455, refTemp 6500, wrong curve) made the AWB converge
+ * wrong -> magenta. */
+static const HI_U16 g_awbGainOffset[4] = { 410, 256, 256, 350 };
+static const HI_S32 g_awbWbPara[6]     = { 59, 197, 0, 170828, 128, -118550 };
 
 static HI_S32 cmos_get_awb_default(VI_PIPE ViPipe, AWB_SENSOR_DEFAULT_S *pstAwbSnsDft)
 {
@@ -253,13 +249,7 @@ static HI_S32 cmos_get_awb_default(VI_PIPE ViPipe, AWB_SENSOR_DEFAULT_S *pstAwbS
 
     memset(pstAwbSnsDft, 0, sizeof(AWB_SENSOR_DEFAULT_S));
 
-    /* Reference color temperature matching vendor sensor.ini AutoColorTemp[1]=6500K. */
-    pstAwbSnsDft->u16WbRefTemp        = 6500;
-    /* Vendor-calibrated WB gains from sensor.ini AutoStaticWb="417,256,256,455".
-     * Prior glutinium values (R=0x019C, B=0x01CB) were for a different integration
-     * and caused a violet tint together with mismatched CCM tables. */
-    /* WB gain offset + Planckian curve: board-provided (sensor.ini [static_awb])
-       when pushed before registration, else sensor base defaults. */
+    pstAwbSnsDft->u16WbRefTemp        = 4970;   /* libsns_f22 value */
     memcpy(pstAwbSnsDft->au16GainOffset, g_awbGainOffset, sizeof(g_awbGainOffset));
     memcpy(pstAwbSnsDft->as32WbPara,     g_awbWbPara,     sizeof(g_awbWbPara));
 
