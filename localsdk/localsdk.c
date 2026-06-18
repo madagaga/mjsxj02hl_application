@@ -2572,9 +2572,10 @@ int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECT
         ca.unChnAttr.stOverlayChn.stPoint.s32Y = 0;
         ca.unChnAttr.stOverlayChn.u32FgAlpha   = 128; /* range [0,128] */
         ca.unChnAttr.stOverlayChn.u32BgAlpha   = 0;
-        ca.unChnAttr.stOverlayChn.u32Layer     = (HI_U32)(params->rects_hdl & 7); /* distinct layer */
-        ca.unChnAttr.stOverlayChn.u16ColorLUT[0] = 0x83E0; /* green (ARGB1555) */
-        ca.unChnAttr.stOverlayChn.u16ColorLUT[1] = 0x83E0;
+        ca.unChnAttr.stOverlayChn.u32Layer     = 5;   /* match original rect layer */
+        /* Exact LUT values read from the original firmware's /proc/umap/rgn. */
+        ca.unChnAttr.stOverlayChn.u16ColorLUT[0] = 916;
+        ca.unChnAttr.stOverlayChn.u16ColorLUT[1] = 31106;
         result = HI_MPI_RGN_AttachToChn(params->rects_hdl, &stChn, &ca);
         if (result != HI_SUCCESS)
             sdk_log("[sdk][osd] rect AttachToChn failed: 0x%x\n", result);
