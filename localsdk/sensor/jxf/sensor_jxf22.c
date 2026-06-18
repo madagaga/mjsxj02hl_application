@@ -325,12 +325,13 @@ static HI_S32 sensor_register(void) {
 }
 
 /* The sensor mirror/flip rotates the Bayer phase, so the ISP phase must follow
-   the orientation requested at bring-up. Empirically on the JXF22 the phase
-   tracks the *mirror* (horizontal) axis only — the flip (vertical) axis does not
-   shift it (the sensor compensates the readout start line):
-     - normal      (mirror=0): BGGR   [confirmed]
-     - mirror+flip (mirror=1): GBRG   [confirmed: this board's 180° mount]
-   The native phase is BGGR; only mirror swaps it to GBRG. */
+   the orientation requested at bring-up. The phase shift tracks the HORIZONTAL
+   readout axis only (column phase); the vertical axis does not shift it (the
+   sensor compensates the readout start line). cfg.mirror is the geometric
+   horizontal request (mapped onto the sensor's ISP_SNS_FLIP bit, see bring-up):
+     - mirror=0: BGGR   [confirmed: app flip+mirror -> sensor normal, 180°]
+     - mirror=1: GBRG   [confirmed: default upright, 180° mount correction]
+   The native phase is BGGR; only the horizontal mirror swaps it to GBRG. */
 static ISP_BAYER_FORMAT_E jxf22_bayer_phase(HI_BOOL mirror, HI_BOOL flip) {
     (void)flip; /* vertical axis does not shift the JXF22 phase */
     return mirror ? BAYER_GBRG : BAYER_BGGR;
@@ -427,9 +428,15 @@ HI_S32 sensor_jxf22_bringup(void) {
     /* Apply target fps (VMAX reprogramming) and orientation at the sensor. */
     sensor_set_fps(s_cfg.fps);
 
+    /* The JXF22's mirror/flip register bits are crossed vs the geometric axes:
+       its ISP_SNS_FLIP bit drives the HORIZONTAL (left/right) readout, and
+       ISP_SNS_MIRROR drives the VERTICAL (top/bottom) one (confirmed on camera).
+       So map the geometric request accordingly: mirror -> ISP_SNS_FLIP,
+       flip -> ISP_SNS_MIRROR. The Bayer phase shift follows the horizontal axis,
+       i.e. cfg.mirror (see jxf22_bayer_phase). */
     ISP_SNS_MIRRORFLIP_TYPE_E eMf =
-        (ISP_SNS_MIRRORFLIP_TYPE_E)((s_cfg.flip ? ISP_SNS_FLIP : 0) |
-                                    (s_cfg.mirror ? ISP_SNS_MIRROR : 0));
+        (ISP_SNS_MIRRORFLIP_TYPE_E)((s_cfg.mirror ? ISP_SNS_FLIP : 0) |
+                                    (s_cfg.flip   ? ISP_SNS_MIRROR : 0));
     if (stSnsSoiSensorObj.pfnMirrorFlip)
         stSnsSoiSensorObj.pfnMirrorFlip(0, eMf);
 
