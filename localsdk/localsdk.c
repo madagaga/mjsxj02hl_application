@@ -2349,7 +2349,9 @@ static int32_t inner_OverLay_ShowRgn(RGN_HANDLE handle, int chn, int x, int y, b
             /* Hisi OVERLAY alpha range is [0,128] (128 = opaque, not 255). */
             stChnAttr.unChnAttr.stOverlayChn.u32BgAlpha = 0;   /* transparent bg */
             stChnAttr.unChnAttr.stOverlayChn.u32FgAlpha = 128; /* opaque text    */
-            stChnAttr.unChnAttr.stOverlayChn.u32Layer = 0;
+            /* Distinct layer per region on the channel (timestamp/logo/rects);
+               sharing a layer makes a later attach fail ILLEGAL_PARAM. */
+            stChnAttr.unChnAttr.stOverlayChn.u32Layer = (HI_U32)(handle & 7);
 
             result = HI_MPI_RGN_AttachToChn(handle, &stChn, &stChnAttr);
             if (result != HI_SUCCESS) {
@@ -2570,7 +2572,7 @@ int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECT
         ca.unChnAttr.stOverlayChn.stPoint.s32Y = 0;
         ca.unChnAttr.stOverlayChn.u32FgAlpha   = 128; /* range [0,128] */
         ca.unChnAttr.stOverlayChn.u32BgAlpha   = 0;
-        ca.unChnAttr.stOverlayChn.u32Layer     = 1;   /* distinct from ts/logo */
+        ca.unChnAttr.stOverlayChn.u32Layer     = (HI_U32)(params->rects_hdl & 7); /* distinct layer */
         ca.unChnAttr.stOverlayChn.u16ColorLUT[0] = 0x83E0; /* green (ARGB1555) */
         ca.unChnAttr.stOverlayChn.u16ColorLUT[1] = 0x83E0;
         result = HI_MPI_RGN_AttachToChn(params->rects_hdl, &stChn, &ca);
