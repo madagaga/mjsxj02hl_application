@@ -2973,12 +2973,22 @@ int32_t sample_ivp_set_roi_map(int32_t chn, void *roi_map) {
  * obj_class[0] is the humanoid class. Boxes are scaled to the primary
  * (1920x1080) so the OSD rectangle overlay (drawn on the primary channel) and
  * the app alarm logic receive primary-space coordinates. */
+/* Per-class output buffers for hi_ivp_process_ex. The obj_array is in/out: the
+   caller must provide an allocated objs buffer and a non-zero rect_capcity for
+   every class, otherwise libivp rejects it (ivp_check_obj: rect_capcity can not
+   be 0). libivp fills rect_num and the boxes. */
+#define SDK_IVP_OBJ_CAPACITY 16
 static int32_t sdk_ivp_process_and_dispatch(VIDEO_FRAME_INFO_S *frame) {
+    static hi_ivp_obj s_ivpObjBuf[HI_IVP_MAX_CLASS][SDK_IVP_OBJ_CAPACITY];
     hi_ivp_obj_array objs;
     LOCALSDK_ALARM_EVENT_INFO ev;
     int32_t result;
 
     memset(&objs, 0, sizeof(objs));
+    for (int c = 0; c < HI_IVP_MAX_CLASS; c++) {
+        objs.obj_class[c].objs         = s_ivpObjBuf[c];
+        objs.obj_class[c].rect_capcity = SDK_IVP_OBJ_CAPACITY;
+    }
     result = hi_ivp_process_ex(g_ivpHandle, frame, &objs);
     if (result != HI_SUCCESS) {
         sdk_log("[sdk][ivp] hi_ivp_process_ex failed: 0x%x\n", result);
