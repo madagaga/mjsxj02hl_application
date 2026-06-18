@@ -714,7 +714,12 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn, LOCALSDK_VIDEO_OPTION
     stVencChnAttr.stGopAttr.stNormalP.s32IPQpDelta = 2;
 
     if (enType == PT_H264) {
-        stVencChnAttr.stVencAttr.u32BufSize = stSize.u32Width * stSize.u32Height;
+        /* Match the original firmware MMZ footprint: a quarter-frame stream
+           buffer (original 1080p uses ~328 KB) and a shared recon/reference
+           buffer (one Rcn instead of two). Frees ~5 MB vs full-frame buffer +
+           dual recon — required to leave room for the IVP HW/SW buffers. */
+        stVencChnAttr.stVencAttr.u32BufSize = stSize.u32Width * stSize.u32Height / 4;
+        stVencChnAttr.stVencAttr.stAttrH264e.bRcnRefShareBuf = HI_TRUE;
 
         if (options->rcmode == LOCALSDK_VIDEO_RCMODE_VARIABLE_BITRATE) {
             stVencChnAttr.stRcAttr.enRcMode = VENC_RC_MODE_H264VBR;
@@ -739,7 +744,8 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn, LOCALSDK_VIDEO_OPTION
             stVencChnAttr.stRcAttr.stH264Cbr.u32BitRate       = options->bitrate;
         }
     } else if (enType == PT_H265) {
-        stVencChnAttr.stVencAttr.u32BufSize = stSize.u32Width * stSize.u32Height * 2;
+        stVencChnAttr.stVencAttr.u32BufSize = stSize.u32Width * stSize.u32Height / 2;
+        stVencChnAttr.stVencAttr.stAttrH265e.bRcnRefShareBuf = HI_TRUE;
 
         if (options->rcmode == LOCALSDK_VIDEO_RCMODE_VARIABLE_BITRATE) {
             stVencChnAttr.stRcAttr.enRcMode = VENC_RC_MODE_H265VBR;
