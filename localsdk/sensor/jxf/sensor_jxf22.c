@@ -325,16 +325,20 @@ static HI_S32 sensor_register(void) {
 }
 
 /* The sensor mirror/flip rotates the Bayer phase, so the ISP phase must follow
-   the orientation requested at bring-up. The phase shift tracks the HORIZONTAL
-   readout axis only (column phase); the vertical axis does not shift it (the
-   sensor compensates the readout start line). cfg.mirror is the geometric
-   horizontal request (mapped onto the sensor's ISP_SNS_FLIP bit, see bring-up):
-     - mirror=0: BGGR   [confirmed: app flip+mirror -> sensor normal, 180°]
-     - mirror=1: GBRG   [confirmed: default upright, 180° mount correction]
-   The native phase is BGGR; only the horizontal mirror swaps it to GBRG. */
+   the orientation requested at bring-up. The native phase is BGGR. Decomposing
+   the ISP enum into bits (RGGB=0b00, GRBG=0b01, GBRG=0b10, BGGR=0b11), the JXF22
+   phase that gives correct colour for each (mirror,flip) state is:
+     - (0,0): BGGR  [confirmed: app flip+mirror -> sensor normal, 180°]
+     - (1,1): GBRG  [confirmed: default upright, 180° mount correction]
+     - single axis: GRBG  [model; the JXF22 does not shift phase independently
+                           per axis — both axes together only swap the column
+                           phase, a lone axis swaps the row phase]
+   bit1 = 1 ^ (mirror ^ flip), bit0 = 1 ^ (mirror & flip). */
 static ISP_BAYER_FORMAT_E jxf22_bayer_phase(HI_BOOL mirror, HI_BOOL flip) {
-    (void)flip; /* vertical axis does not shift the JXF22 phase */
-    return mirror ? BAYER_GBRG : BAYER_BGGR;
+    int m = (mirror != 0), f = (flip != 0);
+    int bit1 = 1 ^ (m ^ f);
+    int bit0 = 1 ^ (m & f);
+    return (ISP_BAYER_FORMAT_E)((bit1 << 1) | bit0);
 }
 
 static HI_S32 sensor_isp_init(void) {
