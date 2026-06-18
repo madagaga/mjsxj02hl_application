@@ -388,6 +388,36 @@ hi_s32 hi_ivp_set_roi_map(hi_s32 ivp_handle, const hi_ivp_roi_map *roi_map);
 *****************************************************************************/
 hi_s32 hi_ivp_process(hi_s32 ivp_handle, const VIDEO_FRAME_INFO_S *src_frame, hi_bool *obj_alarm);
 
+/* --- hi_ivp_process_ex: extended process returning per-class object boxes.
+ * Exported by the firmware libivp.so (Hi3518EV300) but missing from this header.
+ * Layout cross-checked 3 ways: the osdrv4 reference header, the firmware
+ * liblocalsdk decompile (obj_array: rect_num@0x24, objs@0x2c) and a disassembly
+ * of hi_ivp_process_ex (first arg used as an int handle, GetChipId==0x3518e300).
+ * NOTE: on this firmware hi_ivp_obj is 16 bytes (rect only) — the 'quality'
+ * float of the osdrv4 header is absent (confirmed by the 16-byte objs stride in
+ * liblocalsdk). Keep hi_ivp_obj == hi_ivp_rect-sized. */
+#define HI_IVP_MAX_CLASS 2
+typedef struct {
+    hi_s32 x;
+    hi_s32 y;
+    hi_u32 width;
+    hi_u32 height;
+} hi_ivp_rect;
+typedef struct {
+    hi_ivp_rect rect;
+} hi_ivp_obj;
+typedef struct {
+    hi_char     class_name[32];
+    hi_u32      rect_num;
+    hi_u32      rect_capcity;
+    hi_ivp_obj *objs;
+} hi_ivp_obj_of_one_class;
+typedef struct {
+    hi_s32                  class_num;
+    hi_ivp_obj_of_one_class obj_class[HI_IVP_MAX_CLASS];
+} hi_ivp_obj_array;
+hi_s32 hi_ivp_process_ex(hi_s32 ivp_handle, const VIDEO_FRAME_INFO_S *src_frame, hi_ivp_obj_array *obj_array);
+
 /* Error Code */
 typedef enum hiEN_IVP_ERR_CODE_E {
     ERR_IVP_READ_FILE      = 0x41,   /* IVP read file error */

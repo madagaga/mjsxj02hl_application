@@ -1002,6 +1002,10 @@ int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         ? COMPRESS_MODE_SEG : COMPRESS_MODE_NONE;
     stChnAttr.stFrameRate.s32SrcFrameRate = -1;
     stChnAttr.stFrameRate.s32DstFrameRate = -1;
+    /* Secondary channel (640x360) feeds both VENC1 (bind) and the IVP detection
+       thread. A non-zero depth keeps frames available for user GetChnFrame
+       alongside the bind; chn0 stays depth 0 (wrap/online to VENC0). */
+    stChnAttr.u32Depth = (g_vpssChn[chn] == 1) ? 2 : 0;
 
     /* Board orientation is corrected at sensor level via pfnMirrorFlip in local_sdk_video_init.
        VPSS channels use user-requested mirror/flip only (no board XOR).
@@ -2126,6 +2130,12 @@ int local_sdk_speaker_clean_buf_data() {
 /**
  * @brief Initialize alarm subsystem
  */
+/* IVP detection entry points (defined in the IVP subsystem section below). */
+int32_t        sample_ivp_init(int32_t width, int32_t height, const char *oms_file);
+int32_t        sample_ivp_deinit(void);
+static int32_t sdk_ivp_detect_start(void);
+static void    sdk_ivp_detect_stop(void);
+
 int local_sdk_alarm_init(int width, int height) {
     if (width <= 0 || height <= 0) {
         sdk_log("[sdk][alarm] Invalid dimensions: %dx%d\n", width, height);
@@ -2133,6 +2143,15 @@ int local_sdk_alarm_init(int width, int height) {
     }
     
     sdk_log("[sdk][alarm] Initializing alarm: %dx%d\n", width, height);
+
+    /* Bring up the IVP humanoid detector on the 640x360 model and start the
+       detection thread (reads VPSS secondary, dispatches alarm events). */
+    if (sample_ivp_init(BOARD_SUB_WIDTH, BOARD_SUB_HEIGHT, NULL) != LOCALSDK_OK) {
+        sdk_log("[sdk][alarm] IVP init failed; detection disabled\n");
+    } else if (sdk_ivp_detect_start() != LOCALSDK_OK) {
+        sdk_log("[sdk][alarm] IVP detection thread failed to start\n");
+    }
+
     g_alarmState = 1;
     return LOCALSDK_OK;
 }
@@ -2155,6 +2174,8 @@ int local_sdk_set_alarm_sensitivity(int type, int value) {
  */
 int local_sdk_alarm_exit() {
     sdk_log("[sdk][alarm] Exiting alarm\n");
+    sdk_ivp_detect_stop();
+    sample_ivp_deinit();
     g_alarmState = 0;
     return LOCALSDK_OK;
 }
@@ -2631,6 +2652,8 @@ int inner_change_resulu_type(int resolution, int *result) {
 
 /* Global IVP state */
 static hi_s32   g_ivpHandle = -1;
+static pthread_t    g_ivpDetectThread = 0;
+static volatile int g_ivpDetectRun    = 0;
 static uint32_t g_ivpResourceSize = 0;
 static HI_VOID *g_ivpResourceBuffer = NULL;
 static HI_U64   g_ivpPhysAddr = 0;
@@ -2939,22 +2962,93 @@ int32_t sample_ivp_set_roi_map(int32_t chn, void *roi_map) {
 /**
  * @brief Process frame with IVP
  */
-int32_t sample_ivp_process_frame(int32_t chn, void *frame_data, int32_t frame_size) {
-    hi_bool obj_alarm = HI_FALSE;
+/* Run the humanoid detector on one 640x360 frame and dispatch the result.
+ * hi_ivp_process_ex returns boxes per class in the model's (640x360) space;
+ * obj_class[0] is the humanoid class. Boxes are scaled to the primary
+ * (1920x1080) so the OSD rectangle overlay (drawn on the primary channel) and
+ * the app alarm logic receive primary-space coordinates. */
+static int32_t sdk_ivp_process_and_dispatch(VIDEO_FRAME_INFO_S *frame) {
+    hi_ivp_obj_array objs;
+    LOCALSDK_ALARM_EVENT_INFO ev;
     int32_t result;
 
-    if (!frame_data) {
-        sdk_log("[sdk][ivp] Invalid frame data\n");
-        return LOCALSDK_ERROR;
-    }
-
-    result = hi_ivp_process(g_ivpHandle, (const VIDEO_FRAME_INFO_S *)frame_data, &obj_alarm);
+    memset(&objs, 0, sizeof(objs));
+    result = hi_ivp_process_ex(g_ivpHandle, frame, &objs);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][ivp] Failed to process frame: 0x%x\n", result);
+        sdk_log("[sdk][ivp] hi_ivp_process_ex failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
 
+    const uint32_t sx = BOARD_WIDTH  / BOARD_SUB_WIDTH;   /* 1920/640 = 3 */
+    const uint32_t sy = BOARD_HEIGHT / BOARD_SUB_HEIGHT;  /* 1080/360 = 3 */
+
+    memset(&ev, 0, sizeof(ev));
+    int n = 0;
+    if (objs.class_num > 0) {
+        hi_ivp_obj_of_one_class *cls = &objs.obj_class[0]; /* humanoid */
+        int cnt = (int)cls->rect_num;
+        if (cnt > LOCALSDK_ALARM_MAXIMUM_OBJECTS) cnt = LOCALSDK_ALARM_MAXIMUM_OBJECTS;
+        for (int i = 0; i < cnt && cls->objs; i++) {
+            hi_ivp_rect *r = &cls->objs[i].rect;
+            ev.objects[n].type   = LOCALSDK_ALARM_TYPE_HUMANOID;
+            ev.objects[n].state  = 1;
+            ev.objects[n].x      = (uint32_t)(r->x > 0 ? r->x : 0) * sx;
+            ev.objects[n].y      = (uint32_t)(r->y > 0 ? r->y : 0) * sy;
+            ev.objects[n].width  = r->width  * sx;
+            ev.objects[n].height = r->height * sy;
+            n++;
+        }
+    }
+    ev.type  = LOCALSDK_ALARM_TYPE_HUMANOID;
+    ev.state = (n > 0) ? 1 : 0;
+
+    sdk_alarm_run_callback(&ev);
     return LOCALSDK_OK;
+}
+
+/* Detection thread: pulls 640x360 frames from VPSS secondary (chn 1, which has
+ * u32Depth>0 so user readout coexists with the VENC1 bind) and feeds the IVP. */
+static void *sdk_ivp_detect_thread(void *arg) {
+    VIDEO_FRAME_INFO_S frame;
+    int32_t ret;
+    (void)arg;
+
+    sdk_log("[sdk][ivp] detection thread started\n");
+    while (g_ivpDetectRun) {
+        memset(&frame, 0, sizeof(frame));
+        ret = HI_MPI_VPSS_GetChnFrame(g_vpssGrp, LOCALSDK_VIDEO_SECONDARY_CHANNEL,
+                                      &frame, 1000);
+        if (ret != HI_SUCCESS) {
+            usleep(USLEEP_50MS);
+            continue;
+        }
+
+        sdk_ivp_process_and_dispatch(&frame);
+
+        HI_MPI_VPSS_ReleaseChnFrame(g_vpssGrp, LOCALSDK_VIDEO_SECONDARY_CHANNEL, &frame);
+    }
+    sdk_log("[sdk][ivp] detection thread stopped\n");
+    return NULL;
+}
+
+static int32_t sdk_ivp_detect_start(void) {
+    if (g_ivpDetectRun) return LOCALSDK_OK;
+    g_ivpDetectRun = 1;
+    if (pthread_create(&g_ivpDetectThread, NULL, sdk_ivp_detect_thread, NULL) != 0) {
+        g_ivpDetectRun = 0;
+        sdk_log("[sdk][ivp] failed to start detection thread\n");
+        return LOCALSDK_ERROR;
+    }
+    return LOCALSDK_OK;
+}
+
+static void sdk_ivp_detect_stop(void) {
+    if (!g_ivpDetectRun) return;
+    g_ivpDetectRun = 0;
+    if (g_ivpDetectThread) {
+        pthread_join(g_ivpDetectThread, NULL);
+        g_ivpDetectThread = 0;
+    }
 }
 
 /**
