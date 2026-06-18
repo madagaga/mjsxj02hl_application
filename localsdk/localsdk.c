@@ -2319,8 +2319,9 @@ static int32_t inner_OverLay_ShowRgn(RGN_HANDLE handle, int chn, int x, int y, b
             stChnAttr.enType = OVERLAY_RGN;
             stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = x;
             stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = y;
+            /* Hisi OVERLAY alpha range is [0,128] (128 = opaque, not 255). */
             stChnAttr.unChnAttr.stOverlayChn.u32BgAlpha = 0;   /* transparent bg */
-            stChnAttr.unChnAttr.stOverlayChn.u32FgAlpha = 255; /* opaque text   */
+            stChnAttr.unChnAttr.stOverlayChn.u32FgAlpha = 128; /* opaque text    */
             stChnAttr.unChnAttr.stOverlayChn.u32Layer = 0;
 
             result = HI_MPI_RGN_AttachToChn(handle, &stChn, &stChnAttr);
