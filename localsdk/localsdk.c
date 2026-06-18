@@ -2489,90 +2489,97 @@ int local_sdk_video_osd_update_timestamp(int chn, bool state, struct tm *timesta
 /**
  * @brief Update multiple rectangles (motion detection)
  */
-/* Detection boxes are drawn with COVER regions (hardware vector quadrilaterals,
-   no bitmap canvas) instead of a full-frame OVERLAY: a 1920x1080 ARGB1555 canvas
-   would need ~4-8 MB of MMZ, which does not fit alongside the IVP buffers. The
-   original firmware uses a 640x360 overlay canvas (≈1 MB, secondary-sized); we
-   target the primary at full resolution, so COVER outlines are the memory-fit
-   equivalent. One COVER handle per object, hollow quad with line thickness. */
-#define SDK_OSD_RECT_HDL_BASE 16   /* avoid clashing with timestamp/logo/(0..5) */
-
-static int32_t sdk_osd_cover_set(RGN_HANDLE handle, int chn, bool show,
-                                 uint32_t x, uint32_t y, uint32_t w, uint32_t h,
-                                 uint32_t color) {
-    MPP_CHN_S stChn;
-    RGN_CHN_ATTR_S stChnAttr;
-    HI_S32 result;
-
-    stChn.enModId  = HI_ID_VENC;
-    stChn.s32DevId = 0;
-    stChn.s32ChnId = chn;
-
-    memset(&stChnAttr, 0, sizeof(stChnAttr));
-    stChnAttr.bShow  = show ? HI_TRUE : HI_FALSE;
-    stChnAttr.enType = COVER_RGN;
-    stChnAttr.unChnAttr.stCoverChn.enCoverType  = AREA_QUAD_RANGLE;
-    stChnAttr.unChnAttr.stCoverChn.enCoordinate = RGN_ABS_COOR;
-    stChnAttr.unChnAttr.stCoverChn.u32Color =
-        (color == LOCALSDK_OSD_COLOR_ORANGE) ? 0x00FFA500 : 0x0000FF00;
-    stChnAttr.unChnAttr.stCoverChn.u32Layer = 0;
-    if (show) {
-        RGN_QUADRANGLE_S *q = &stChnAttr.unChnAttr.stCoverChn.stQuadRangle;
-        q->bSolid  = HI_FALSE;   /* hollow → outline */
-        q->u32Thick = 4;
-        q->stPoint[0].s32X = (HI_S32)x;       q->stPoint[0].s32Y = (HI_S32)y;
-        q->stPoint[1].s32X = (HI_S32)(x + w); q->stPoint[1].s32Y = (HI_S32)y;
-        q->stPoint[2].s32X = (HI_S32)(x + w); q->stPoint[2].s32Y = (HI_S32)(y + h);
-        q->stPoint[3].s32X = (HI_S32)x;       q->stPoint[3].s32Y = (HI_S32)(y + h);
-    }
-
-    /* Attach on first use, then update via SetDisplayAttr. */
-    RGN_CHN_ATTR_S stCheck;
-    result = HI_MPI_RGN_GetDisplayAttr(handle, &stChn, &stCheck);
-    if (result != HI_SUCCESS && show) {
-        result = HI_MPI_RGN_AttachToChn(handle, &stChn, &stChnAttr);
-        if (result != HI_SUCCESS) {
-            sdk_log("[sdk][osd] cover AttachToChn failed: 0x%x\n", result);
-            return LOCALSDK_ERROR;
-        }
-        return LOCALSDK_OK;
-    }
-    HI_MPI_RGN_SetDisplayAttr(handle, &stChn, &stChnAttr);
-    return LOCALSDK_OK;
+/* Set one pixel in a 2bpp (4 pixels/byte) overlay canvas. */
+static inline void sdk_osd_px2bpp(uint8_t *base, uint32_t stride, uint32_t x,
+                                  uint32_t y, uint8_t v) {
+    uint8_t *p = base + y * stride + (x >> 2);
+    int sh = (int)(x & 3) * 2;
+    *p = (uint8_t)((*p & ~(3 << sh)) | ((v & 3) << sh));
 }
 
+/* Detection boxes use a full-frame 2bpp OVERLAY with a 2-entry colour LUT, like
+   the original firmware (1920x1080, PiFmt ARGB_2BPP, ~1 MB — vs ~8 MB for an
+   ARGB1555 canvas, which fails NOMEM next to the IVP). COVER_RGN was tried but
+   is not supported on VENC (0xa0038008 NOT_SUPPORT). Outlines drawn with pixel
+   value 1 -> ColorLUT; value 0 = transparent. */
 int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECTANGLES *rectangles) {
-    if (chn < 0 || chn > 1) return LOCALSDK_ERROR;
+    OSD_CHANNEL_PARAMS *params = sdk_osd_get_params(chn);
+    HI_S32 result;
+    if (!params) return LOCALSDK_ERROR;
 
-    /* One COVER region per object slot, created lazily on first show. */
-    static int s_coverCreated[2][LOCALSDK_ALARM_MAXIMUM_OBJECTS] = {{0}};
-
-    for (int i = 0; i < LOCALSDK_ALARM_MAXIMUM_OBJECTS; i++) {
-        RGN_HANDLE hdl = SDK_OSD_RECT_HDL_BASE + chn * LOCALSDK_ALARM_MAXIMUM_OBJECTS + i;
-        bool show = (state && rectangles && i < (int)rectangles->count
-                     && rectangles->objects[i].visible);
-
-        if (show && !s_coverCreated[chn][i]) {
-            RGN_ATTR_S stRgnAttr;
-            memset(&stRgnAttr, 0, sizeof(stRgnAttr));
-            stRgnAttr.enType = COVER_RGN; /* no canvas buffer */
-            HI_S32 r = HI_MPI_RGN_Create(hdl, &stRgnAttr);
-            if (r != HI_SUCCESS && r != HI_ERR_RGN_EXIST) {
-                sdk_log("[sdk][osd] cover RGN_Create failed: 0x%x\n", r);
-                continue;
-            }
-            s_coverCreated[chn][i] = 1;
+    if (params->rects_hdl == 0) {
+        params->rects_hdl = chn * 3 + 2;
+        RGN_ATTR_S a;
+        memset(&a, 0, sizeof(a));
+        a.enType = OVERLAY_RGN;
+        a.unAttr.stOverlay.enPixelFmt       = PIXEL_FORMAT_ARGB_2BPP;
+        a.unAttr.stOverlay.stSize.u32Width  = BOARD_WIDTH;
+        a.unAttr.stOverlay.stSize.u32Height = BOARD_HEIGHT;
+        a.unAttr.stOverlay.u32BgColor       = 0;
+        a.unAttr.stOverlay.u32CanvasNum     = 2;
+        result = HI_MPI_RGN_Create(params->rects_hdl, &a);
+        if (result != HI_SUCCESS && result != HI_ERR_RGN_EXIST) {
+            sdk_log("[sdk][osd] rect RGN_Create(2bpp) failed: 0x%x\n", result);
+            params->rects_hdl = 0;
+            return LOCALSDK_ERROR;
         }
-
-        if (!s_coverCreated[chn][i]) continue; /* nothing to hide if never created */
-        if (show)
-            sdk_osd_cover_set(hdl, chn, true, rectangles->objects[i].x,
-                              rectangles->objects[i].y, rectangles->objects[i].width,
-                              rectangles->objects[i].height, rectangles->objects[i].color);
-        else
-            sdk_osd_cover_set(hdl, chn, false, 0, 0, 0, 0, 0);
     }
 
+    if (state && rectangles && rectangles->count > 0) {
+        RGN_CANVAS_INFO_S cv;
+        if (HI_MPI_RGN_GetCanvasInfo(params->rects_hdl, &cv) == HI_SUCCESS) {
+            uint8_t *base   = (uint8_t *)(uintptr_t)cv.u64VirtAddr;
+            uint32_t stride = cv.u32Stride;
+            uint32_t cw = cv.stSize.u32Width, ch = cv.stSize.u32Height;
+            const uint32_t T = 4; /* outline thickness */
+
+            memset(base, 0, stride * ch); /* transparent */
+            for (uint32_t o = 0; o < rectangles->count && o < LOCALSDK_ALARM_MAXIMUM_OBJECTS; o++) {
+                if (!rectangles->objects[o].visible) continue;
+                uint32_t x = rectangles->objects[o].x, y = rectangles->objects[o].y;
+                uint32_t w = rectangles->objects[o].width, h = rectangles->objects[o].height;
+                if (x >= cw || y >= ch) continue;
+                uint32_t x2 = (x + w < cw) ? x + w : cw - 1;
+                uint32_t y2 = (y + h < ch) ? y + h : ch - 1;
+                for (uint32_t px = x; px <= x2; px++)
+                    for (uint32_t t = 0; t < T; t++) {
+                        if (y + t < ch)  sdk_osd_px2bpp(base, stride, px, y + t, 1);
+                        if (y2 >= t)     sdk_osd_px2bpp(base, stride, px, y2 - t, 1);
+                    }
+                for (uint32_t py = y; py <= y2; py++)
+                    for (uint32_t t = 0; t < T; t++) {
+                        if (x + t < cw)  sdk_osd_px2bpp(base, stride, x + t, py, 1);
+                        if (x2 >= t)     sdk_osd_px2bpp(base, stride, x2 - t, py, 1);
+                    }
+            }
+            HI_MPI_RGN_UpdateCanvas(params->rects_hdl);
+        }
+    }
+
+    /* Attach on first use (with the colour LUT), then just toggle visibility. */
+    MPP_CHN_S stChn;
+    stChn.enModId = HI_ID_VENC; stChn.s32DevId = 0; stChn.s32ChnId = chn;
+    RGN_CHN_ATTR_S ca;
+    bool want = (state && rectangles && rectangles->count > 0);
+    if (HI_MPI_RGN_GetDisplayAttr(params->rects_hdl, &stChn, &ca) != HI_SUCCESS) {
+        if (!want) return LOCALSDK_OK;
+        memset(&ca, 0, sizeof(ca));
+        ca.bShow  = HI_TRUE;
+        ca.enType = OVERLAY_RGN;
+        ca.unChnAttr.stOverlayChn.stPoint.s32X = 0;
+        ca.unChnAttr.stOverlayChn.stPoint.s32Y = 0;
+        ca.unChnAttr.stOverlayChn.u32FgAlpha   = 128; /* range [0,128] */
+        ca.unChnAttr.stOverlayChn.u32BgAlpha   = 0;
+        ca.unChnAttr.stOverlayChn.u32Layer     = 1;   /* distinct from ts/logo */
+        ca.unChnAttr.stOverlayChn.u16ColorLUT[0] = 0x83E0; /* green (ARGB1555) */
+        ca.unChnAttr.stOverlayChn.u16ColorLUT[1] = 0x83E0;
+        result = HI_MPI_RGN_AttachToChn(params->rects_hdl, &stChn, &ca);
+        if (result != HI_SUCCESS)
+            sdk_log("[sdk][osd] rect AttachToChn failed: 0x%x\n", result);
+        return (result == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
+    }
+    ca.bShow = want ? HI_TRUE : HI_FALSE;
+    HI_MPI_RGN_SetDisplayAttr(params->rects_hdl, &stChn, &ca);
     return LOCALSDK_OK;
 }
 
