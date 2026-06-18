@@ -2543,15 +2543,18 @@ int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECT
                 if (x >= cw || y >= ch) continue;
                 uint32_t x2 = (x + w < cw) ? x + w : cw - 1;
                 uint32_t y2 = (y + h < ch) ? y + h : ch - 1;
+                /* Pixel value 3 (byte 0xFF) = humanoid, matching the original's
+                   inner_update_rect_multi_canvas (0xFF for type!=3). Value 0 is
+                   transparent; non-zero is opaque via the colour LUT + FgAlpha. */
                 for (uint32_t px = x; px <= x2; px++)
                     for (uint32_t t = 0; t < T; t++) {
-                        if (y + t < ch)  sdk_osd_px2bpp(base, stride, px, y + t, 1);
-                        if (y2 >= t)     sdk_osd_px2bpp(base, stride, px, y2 - t, 1);
+                        if (y + t < ch)  sdk_osd_px2bpp(base, stride, px, y + t, 3);
+                        if (y2 >= t)     sdk_osd_px2bpp(base, stride, px, y2 - t, 3);
                     }
                 for (uint32_t py = y; py <= y2; py++)
                     for (uint32_t t = 0; t < T; t++) {
-                        if (x + t < cw)  sdk_osd_px2bpp(base, stride, x + t, py, 1);
-                        if (x2 >= t)     sdk_osd_px2bpp(base, stride, x2 - t, py, 1);
+                        if (x + t < cw)  sdk_osd_px2bpp(base, stride, x + t, py, 3);
+                        if (x2 >= t)     sdk_osd_px2bpp(base, stride, x2 - t, py, 3);
                     }
             }
             HI_MPI_RGN_UpdateCanvas(params->rects_hdl);
