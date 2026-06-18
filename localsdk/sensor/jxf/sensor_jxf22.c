@@ -107,11 +107,10 @@ static const ISP_PUB_ATTR_S s_isp_pub_attr = {
     .stWndRect    = {0, 0, JXF22_WIDTH, JXF22_HEIGHT},
     .stSnsSize    = {JXF22_WIDTH, JXF22_HEIGHT},
     .f32FrameRate = (float)JXF22_FPS_NATIVE,  /* native; app retimes via VPSS */
-    /* Native (NORMAL readout) Bayer is BGGR (confirmed: NORMAL gives correct
-       colour). The board mounts the sensor 180° and applies MIRROR_FLIP at the
-       sensor, which rotates the Bayer phase 180°: BGGR -> RGGB. So the ISP must
-       be told RGGB to match the flipped readout (BGGR there gives a magenta cast). */
-    .enBayer      = BAYER_GBRG,  /* TEST: mirror-flip readout phase */
+    /* Native (NORMAL readout) Bayer phase. The effective phase depends on the
+       sensor mirror/flip applied at bring-up and is recomputed in
+       sensor_isp_init() — see jxf22_bayer_phase(). */
+    .enBayer      = BAYER_BGGR,
     .enWDRMode    = WDR_MODE_NONE,
     .u8SnsMode    = 0
 };
@@ -325,6 +324,18 @@ static HI_S32 sensor_register(void) {
     return HI_SUCCESS;
 }
 
+/* The sensor mirror/flip rotates the Bayer phase, so the ISP phase must follow
+   the orientation requested at bring-up. Empirically on the JXF22 the phase
+   tracks the *mirror* (horizontal) axis only — the flip (vertical) axis does not
+   shift it (the sensor compensates the readout start line):
+     - normal      (mirror=0): BGGR   [confirmed]
+     - mirror+flip (mirror=1): GBRG   [confirmed: this board's 180° mount]
+   The native phase is BGGR; only mirror swaps it to GBRG. */
+static ISP_BAYER_FORMAT_E jxf22_bayer_phase(HI_BOOL mirror, HI_BOOL flip) {
+    (void)flip; /* vertical axis does not shift the JXF22 phase */
+    return mirror ? BAYER_GBRG : BAYER_BGGR;
+}
+
 static HI_S32 sensor_isp_init(void) {
     HI_S32 result;
     ISP_PUB_ATTR_S stPubAttr;
@@ -360,6 +371,10 @@ static HI_S32 sensor_isp_init(void) {
     }
 
     memcpy(&stPubAttr, &s_isp_pub_attr, sizeof(stPubAttr));
+    /* Match the ISP Bayer phase to the effective sensor orientation. */
+    stPubAttr.enBayer = jxf22_bayer_phase(s_cfg.mirror, s_cfg.flip);
+    LOGGER(LOGGER_LEVEL_INFO, "[sensor][jxf22] enBayer=%d (mirror=%d flip=%d)",
+           (int)stPubAttr.enBayer, (int)s_cfg.mirror, (int)s_cfg.flip);
     result = HI_MPI_ISP_SetPubAttr(0, &stPubAttr);
     if (result != HI_SUCCESS) {
         LOGGER(LOGGER_LEVEL_ERROR, "[sensor][jxf22] HI_MPI_ISP_SetPubAttr failed: 0x%x", result);
