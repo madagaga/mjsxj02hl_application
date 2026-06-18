@@ -17,7 +17,8 @@
  *   [static_nr]        — per-ISO NR fine strength and coring weight
  *   [static_ca]        — chromatic aberration enable flag
  *   [static_drc]       — dynamic range compression (gated by [module_state])
- *   [module_state]     — per-module enable flags (currently: bStaticDRC)
+ *   [static_sharpen]   — edge/texture sharpening, per-ISO tables (gated)
+ *   [module_state]     — per-module enable flags (bStaticDRC, bStaticSharpen)
  */
 
 #include <string.h>
@@ -90,6 +91,7 @@ typedef struct {
 
     /* [module_state] — only the flags we act on */
     HI_BOOL mod_static_drc;
+    HI_BOOL mod_static_sharpen;
 
     /* [static_drc] */
     HI_BOOL drc_enable;
@@ -98,6 +100,26 @@ typedef struct {
     HI_U16  drc_auto_str;
     HI_U16  drc_auto_str_min;
     HI_U16  drc_auto_str_max;
+
+    /* [static_sharpen] — auto (per-ISO) tables. 2D = [gain/luma idx][iso]. */
+    HI_BOOL shp_enable;
+    HI_U8   shp_luma_wgt[ISP_SHARPEN_LUMA_NUM][ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  shp_texture_str[ISP_SHARPEN_GAIN_NUM][ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  shp_edge_str[ISP_SHARPEN_GAIN_NUM][ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  shp_texture_freq[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  shp_edge_freq[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_over_shoot[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_under_shoot[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_shoot_sup_str[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_shoot_sup_adj[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_detail_ctrl[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_edge_filt_str[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_edge_filt_max_cap[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_rgain[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_bgain[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_ggain[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   shp_skin_gain[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  shp_max_sharp_gain[ISP_AUTO_ISO_STRENGTH_NUM];
 } scene_params_t;
 
 static scene_params_t g_day;
@@ -253,8 +275,10 @@ static int scene_handler(void *user, const char *section,
             p->ca_enable = atoi(v) ? HI_TRUE : HI_FALSE;
 
     } else if (strcasecmp(section, "module_state") == 0) {
-        if (strcasecmp(name, "bStaticDRC") == 0)
-            p->mod_static_drc = atoi(v) ? HI_TRUE : HI_FALSE;
+        if      (strcasecmp(name, "bStaticDRC") == 0)
+            p->mod_static_drc     = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "bStaticSharpen") == 0)
+            p->mod_static_sharpen = atoi(v) ? HI_TRUE : HI_FALSE;
 
     } else if (strcasecmp(section, "static_drc") == 0) {
         /* Keys before DRCToneMappingValue parse fine; the 200-value tone-mapping
@@ -272,6 +296,52 @@ static int scene_handler(void *user, const char *section,
             p->drc_auto_str_min  = (HI_U16)atoi(v);
         else if (strcasecmp(name, "DRCAutoStrMax") == 0)
             p->drc_auto_str_max  = (HI_U16)atoi(v);
+
+    } else if (strcasecmp(section, "static_sharpen") == 0) {
+        /* 2D per-ISO tables: "AutoLumaWgt_<row>" etc., each line = 16 ISO values. */
+        if (strcasecmp(name, "Enable") == 0) {
+            p->shp_enable = atoi(v) ? HI_TRUE : HI_FALSE;
+        } else if (strncasecmp(name, "AutoLumaWgt_", 12) == 0) {
+            int r = atoi(name + 12);
+            if (r >= 0 && r < ISP_SHARPEN_LUMA_NUM)
+                parse_u8_arr(v, p->shp_luma_wgt[r], ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strncasecmp(name, "AutoTextureStr_", 15) == 0) {
+            int r = atoi(name + 15);
+            if (r >= 0 && r < ISP_SHARPEN_GAIN_NUM)
+                parse_u16_arr(v, p->shp_texture_str[r], ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strncasecmp(name, "AutoEdgeStr_", 12) == 0) {
+            int r = atoi(name + 12);
+            if (r >= 0 && r < ISP_SHARPEN_GAIN_NUM)
+                parse_u16_arr(v, p->shp_edge_str[r], ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoTextureFreq") == 0) {
+            parse_u16_arr(v, p->shp_texture_freq, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoEdgeFreq") == 0) {
+            parse_u16_arr(v, p->shp_edge_freq, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoOverShoot") == 0) {
+            parse_u8_arr(v, p->shp_over_shoot, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoUnderShoot") == 0) {
+            parse_u8_arr(v, p->shp_under_shoot, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoShootSupStr") == 0) {
+            parse_u8_arr(v, p->shp_shoot_sup_str, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoShootSupAdj") == 0) {
+            parse_u8_arr(v, p->shp_shoot_sup_adj, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoDetailCtrl") == 0) {
+            parse_u8_arr(v, p->shp_detail_ctrl, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoEdgeFiltStr") == 0) {
+            parse_u8_arr(v, p->shp_edge_filt_str, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoEdgeFiltMaxCap") == 0) {
+            parse_u8_arr(v, p->shp_edge_filt_max_cap, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoRGain") == 0) {
+            parse_u8_arr(v, p->shp_rgain, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoBGain") == 0) {
+            parse_u8_arr(v, p->shp_bgain, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoGGain") == 0) {
+            parse_u8_arr(v, p->shp_ggain, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoSkinGain") == 0) {
+            parse_u8_arr(v, p->shp_skin_gain, ISP_AUTO_ISO_STRENGTH_NUM);
+        } else if (strcasecmp(name, "AutoMaxSharpGain") == 0) {
+            parse_u16_arr(v, p->shp_max_sharp_gain, ISP_AUTO_ISO_STRENGTH_NUM);
+        }
     }
 
     return 1;
@@ -531,6 +601,59 @@ static void apply_drc(const scene_params_t *p)
                attr.stAuto.u16StrengthMax);
 }
 
+/* Edge/texture sharpening — recovers the crispness the original firmware has.
+   Faithful to libsceneauto HI_SCENE_SetStaticSharpen: Get→fill the per-ISO auto
+   tables→Set. enOpType, skin range, DetailCtrlThr and WeakDetailGain keep their
+   ISP defaults from Get (the reference does not touch them). */
+static void apply_sharpen(const scene_params_t *p)
+{
+    if (!p->mod_static_sharpen)
+        return;  /* [module_state] bStaticSharpen = 0 → leave sharpen untouched */
+
+    ISP_SHARPEN_ATTR_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetIspSharpenAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetIspSharpenAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
+
+    attr.bEnable = p->shp_enable;
+
+    for (int i = 0; i < ISP_SHARPEN_GAIN_NUM; i++) {
+        for (int j = 0; j < ISP_AUTO_ISO_STRENGTH_NUM; j++) {
+            attr.stAuto.au8LumaWgt[i][j]    = p->shp_luma_wgt[i][j];
+            attr.stAuto.au16TextureStr[i][j] = p->shp_texture_str[i][j];
+            attr.stAuto.au16EdgeStr[i][j]    = p->shp_edge_str[i][j];
+        }
+    }
+
+    for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
+        attr.stAuto.au16TextureFreq[i]   = p->shp_texture_freq[i];
+        attr.stAuto.au16EdgeFreq[i]      = p->shp_edge_freq[i];
+        attr.stAuto.au8OverShoot[i]      = p->shp_over_shoot[i];
+        attr.stAuto.au8UnderShoot[i]     = p->shp_under_shoot[i];
+        attr.stAuto.au8ShootSupStr[i]    = p->shp_shoot_sup_str[i];
+        attr.stAuto.au8ShootSupAdj[i]    = p->shp_shoot_sup_adj[i];
+        attr.stAuto.au8DetailCtrl[i]     = p->shp_detail_ctrl[i];
+        attr.stAuto.au8EdgeFiltStr[i]    = p->shp_edge_filt_str[i];
+        attr.stAuto.au8EdgeFiltMaxCap[i] = p->shp_edge_filt_max_cap[i];
+        attr.stAuto.au8RGain[i]          = p->shp_rgain[i];
+        attr.stAuto.au8BGain[i]          = p->shp_bgain[i];
+        attr.stAuto.au8GGain[i]          = p->shp_ggain[i];
+        attr.stAuto.au8SkinGain[i]       = p->shp_skin_gain[i];
+        attr.stAuto.au16MaxSharpGain[i]  = p->shp_max_sharp_gain[i];
+    }
+
+    ret = HI_MPI_ISP_SetIspSharpenAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetIspSharpenAttr failed 0x%x", (unsigned)ret);
+    else
+        LOGGER(LOGGER_LEVEL_INFO,
+               "[scene] Sharpen en=%d textureStr[0][0]=%u edgeStr[0][0]=%u maxGain[0]=%u",
+               (int)attr.bEnable, attr.stAuto.au16TextureStr[0][0],
+               attr.stAuto.au16EdgeStr[0][0], attr.stAuto.au16MaxSharpGain[0]);
+}
+
 static void apply_scene(const scene_params_t *p)
 {
     apply_ae(p);
@@ -540,6 +663,7 @@ static void apply_scene(const scene_params_t *p)
     apply_nr(p);
     apply_ca(p);
     apply_drc(p);
+    apply_sharpen(p);
 }
 
 /* -------------------------------------------------------------------------
