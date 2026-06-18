@@ -16,6 +16,8 @@
  *   [static_saturation]— per-ISO saturation curve
  *   [static_nr]        — per-ISO NR fine strength and coring weight
  *   [static_ca]        — chromatic aberration enable flag
+ *   [static_drc]       — dynamic range compression (gated by [module_state])
+ *   [module_state]     — per-module enable flags (currently: bStaticDRC)
  */
 
 #include <string.h>
@@ -85,6 +87,17 @@ typedef struct {
 
     /* [static_ca] */
     HI_BOOL ca_enable;
+
+    /* [module_state] — only the flags we act on */
+    HI_BOOL mod_static_drc;
+
+    /* [static_drc] */
+    HI_BOOL drc_enable;
+    int     drc_curve_select;   /* 0 = asymmetry, 1 = cubic, 2 = user curve */
+    int     drc_op_type;        /* 0 = auto, 1 = manual */
+    HI_U16  drc_auto_str;
+    HI_U16  drc_auto_str_min;
+    HI_U16  drc_auto_str_max;
 } scene_params_t;
 
 static scene_params_t g_day;
@@ -238,6 +251,27 @@ static int scene_handler(void *user, const char *section,
     } else if (strcasecmp(section, "static_ca") == 0) {
         if (strcasecmp(name, "Enable") == 0)
             p->ca_enable = atoi(v) ? HI_TRUE : HI_FALSE;
+
+    } else if (strcasecmp(section, "module_state") == 0) {
+        if (strcasecmp(name, "bStaticDRC") == 0)
+            p->mod_static_drc = atoi(v) ? HI_TRUE : HI_FALSE;
+
+    } else if (strcasecmp(section, "static_drc") == 0) {
+        /* Keys before DRCToneMappingValue parse fine; the 200-value tone-mapping
+           LUT line (backslash-continued) is not parseable by inih and is unused
+           with the asymmetry curve, so it is intentionally ignored. */
+        if      (strcasecmp(name, "Enable") == 0)
+            p->drc_enable        = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "CurveSelect") == 0)
+            p->drc_curve_select  = atoi(v);
+        else if (strcasecmp(name, "DRCOpType") == 0)
+            p->drc_op_type       = atoi(v);
+        else if (strcasecmp(name, "DRCAutoStr") == 0)
+            p->drc_auto_str      = (HI_U16)atoi(v);
+        else if (strcasecmp(name, "DRCAutoStrMin") == 0)
+            p->drc_auto_str_min  = (HI_U16)atoi(v);
+        else if (strcasecmp(name, "DRCAutoStrMax") == 0)
+            p->drc_auto_str_max  = (HI_U16)atoi(v);
     }
 
     return 1;
@@ -463,6 +497,40 @@ static void apply_ca(const scene_params_t *p)
         LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetCAAttr failed 0x%x", (unsigned)ret);
 }
 
+/* Dynamic Range Compression (local tone mapping) — recovers highlight/shadow
+   detail in high-contrast scenes. Faithful to libsceneauto HI_SCENE_SetStaticDRC:
+   Get→patch enable/curve/op-type/auto-strength→Set, leaving stManual,
+   stAsymmetryCurve and the tone-mapping LUT at their ISP defaults. */
+static void apply_drc(const scene_params_t *p)
+{
+    if (!p->mod_static_drc)
+        return;  /* [module_state] bStaticDRC = 0 → leave DRC untouched */
+
+    ISP_DRC_ATTR_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetDRCAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetDRCAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
+
+    attr.bEnable               = p->drc_enable;
+    attr.enCurveSelect         = (ISP_DRC_CURVE_SELECT_E)p->drc_curve_select;
+    attr.enOpType              = (ISP_OP_TYPE_E)p->drc_op_type;
+    attr.stAuto.u16Strength    = p->drc_auto_str;
+    attr.stAuto.u16StrengthMin = p->drc_auto_str_min;
+    attr.stAuto.u16StrengthMax = p->drc_auto_str_max;
+
+    ret = HI_MPI_ISP_SetDRCAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetDRCAttr failed 0x%x", (unsigned)ret);
+    else
+        LOGGER(LOGGER_LEVEL_INFO,
+               "[scene] DRC en=%d curve=%d op=%d str=%u/%u/%u",
+               (int)attr.bEnable, (int)attr.enCurveSelect, (int)attr.enOpType,
+               attr.stAuto.u16Strength, attr.stAuto.u16StrengthMin,
+               attr.stAuto.u16StrengthMax);
+}
+
 static void apply_scene(const scene_params_t *p)
 {
     apply_ae(p);
@@ -471,6 +539,7 @@ static void apply_scene(const scene_params_t *p)
     apply_saturation(p);
     apply_nr(p);
     apply_ca(p);
+    apply_drc(p);
 }
 
 /* -------------------------------------------------------------------------
