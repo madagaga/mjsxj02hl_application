@@ -2489,51 +2489,91 @@ int local_sdk_video_osd_update_timestamp(int chn, bool state, struct tm *timesta
 /**
  * @brief Update multiple rectangles (motion detection)
  */
-int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECTANGLES *rectangles) {
-    OSD_CHANNEL_PARAMS *params = sdk_osd_get_params(chn);
-    RGN_CANVAS_INFO_S stCanvas;
+/* Detection boxes are drawn with COVER regions (hardware vector quadrilaterals,
+   no bitmap canvas) instead of a full-frame OVERLAY: a 1920x1080 ARGB1555 canvas
+   would need ~4-8 MB of MMZ, which does not fit alongside the IVP buffers. The
+   original firmware uses a 640x360 overlay canvas (≈1 MB, secondary-sized); we
+   target the primary at full resolution, so COVER outlines are the memory-fit
+   equivalent. One COVER handle per object, hollow quad with line thickness. */
+#define SDK_OSD_RECT_HDL_BASE 16   /* avoid clashing with timestamp/logo/(0..5) */
+
+static int32_t sdk_osd_cover_set(RGN_HANDLE handle, int chn, bool show,
+                                 uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                 uint32_t color) {
+    MPP_CHN_S stChn;
+    RGN_CHN_ATTR_S stChnAttr;
     HI_S32 result;
 
-    if (!params) return LOCALSDK_ERROR;
+    stChn.enModId  = HI_ID_VENC;
+    stChn.s32DevId = 0;
+    stChn.s32ChnId = chn;
 
-    if (params->rects_hdl == 0) {
-        params->rects_hdl = chn * 3 + 2;
-        /* Create a full-screen transparent overlay for rectangles */
-        sdk_osd_region_init(params->rects_hdl, 1920, 1080);
+    memset(&stChnAttr, 0, sizeof(stChnAttr));
+    stChnAttr.bShow  = show ? HI_TRUE : HI_FALSE;
+    stChnAttr.enType = COVER_RGN;
+    stChnAttr.unChnAttr.stCoverChn.enCoverType  = AREA_QUAD_RANGLE;
+    stChnAttr.unChnAttr.stCoverChn.enCoordinate = RGN_ABS_COOR;
+    stChnAttr.unChnAttr.stCoverChn.u32Color =
+        (color == LOCALSDK_OSD_COLOR_ORANGE) ? 0x00FFA500 : 0x0000FF00;
+    stChnAttr.unChnAttr.stCoverChn.u32Layer = 0;
+    if (show) {
+        RGN_QUADRANGLE_S *q = &stChnAttr.unChnAttr.stCoverChn.stQuadRangle;
+        q->bSolid  = HI_FALSE;   /* hollow → outline */
+        q->u32Thick = 4;
+        q->stPoint[0].s32X = (HI_S32)x;       q->stPoint[0].s32Y = (HI_S32)y;
+        q->stPoint[1].s32X = (HI_S32)(x + w); q->stPoint[1].s32Y = (HI_S32)y;
+        q->stPoint[2].s32X = (HI_S32)(x + w); q->stPoint[2].s32Y = (HI_S32)(y + h);
+        q->stPoint[3].s32X = (HI_S32)x;       q->stPoint[3].s32Y = (HI_S32)(y + h);
     }
 
-    if (state && rectangles) {
-        result = HI_MPI_RGN_GetCanvasInfo(params->rects_hdl, &stCanvas);
-        if (result == HI_SUCCESS) {
-            uint16_t *pData = (uint16_t *)(uintptr_t)stCanvas.u64VirtAddr;
-            uint32_t stride = stCanvas.u32Stride / 2;
-            
-            /* Clear canvas */
-            memset(pData, 0, stCanvas.u32Stride * stCanvas.stSize.u32Height);
-            
-            /* Draw each rectangle */
-            for (uint32_t i = 0; i < rectangles->count && i < LOCALSDK_ALARM_MAXIMUM_OBJECTS; i++) {
-                uint32_t x = rectangles->objects[i].x;
-                uint32_t y = rectangles->objects[i].y;
-                uint32_t w = rectangles->objects[i].width;
-                uint32_t h = rectangles->objects[i].height;
-                uint16_t color = (rectangles->objects[i].color == LOCALSDK_OSD_COLOR_ORANGE) ? 0xFC00 : 0x83E0;
-
-                /* Surgical drawing of 4 lines per rect */
-                for (uint32_t j = 0; j < w && (x+j) < 1920; j++) {
-                    if (y < 1080) pData[y * stride + (x+j)] = color;
-                    if ((y+h) < 1080) pData[(y+h) * stride + (x+j)] = color;
-                }
-                for (uint32_t j = 0; j < h && (y+j) < 1080; j++) {
-                    if (x < 1920) pData[(y+j) * stride + x] = color;
-                    if ((x+w) < 1920) pData[(y+j) * stride + (x+w)] = color;
-                }
-            }
-            HI_MPI_RGN_UpdateCanvas(params->rects_hdl);
+    /* Attach on first use, then update via SetDisplayAttr. */
+    RGN_CHN_ATTR_S stCheck;
+    result = HI_MPI_RGN_GetDisplayAttr(handle, &stChn, &stCheck);
+    if (result != HI_SUCCESS && show) {
+        result = HI_MPI_RGN_AttachToChn(handle, &stChn, &stChnAttr);
+        if (result != HI_SUCCESS) {
+            sdk_log("[sdk][osd] cover AttachToChn failed: 0x%x\n", result);
+            return LOCALSDK_ERROR;
         }
+        return LOCALSDK_OK;
+    }
+    HI_MPI_RGN_SetDisplayAttr(handle, &stChn, &stChnAttr);
+    return LOCALSDK_OK;
+}
+
+int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECTANGLES *rectangles) {
+    if (chn < 0 || chn > 1) return LOCALSDK_ERROR;
+
+    /* One COVER region per object slot, created lazily on first show. */
+    static int s_coverCreated[2][LOCALSDK_ALARM_MAXIMUM_OBJECTS] = {{0}};
+
+    for (int i = 0; i < LOCALSDK_ALARM_MAXIMUM_OBJECTS; i++) {
+        RGN_HANDLE hdl = SDK_OSD_RECT_HDL_BASE + chn * LOCALSDK_ALARM_MAXIMUM_OBJECTS + i;
+        bool show = (state && rectangles && i < (int)rectangles->count
+                     && rectangles->objects[i].visible);
+
+        if (show && !s_coverCreated[chn][i]) {
+            RGN_ATTR_S stRgnAttr;
+            memset(&stRgnAttr, 0, sizeof(stRgnAttr));
+            stRgnAttr.enType = COVER_RGN; /* no canvas buffer */
+            HI_S32 r = HI_MPI_RGN_Create(hdl, &stRgnAttr);
+            if (r != HI_SUCCESS && r != HI_ERR_RGN_EXIST) {
+                sdk_log("[sdk][osd] cover RGN_Create failed: 0x%x\n", r);
+                continue;
+            }
+            s_coverCreated[chn][i] = 1;
+        }
+
+        if (!s_coverCreated[chn][i]) continue; /* nothing to hide if never created */
+        if (show)
+            sdk_osd_cover_set(hdl, chn, true, rectangles->objects[i].x,
+                              rectangles->objects[i].y, rectangles->objects[i].width,
+                              rectangles->objects[i].height, rectangles->objects[i].color);
+        else
+            sdk_osd_cover_set(hdl, chn, false, 0, 0, 0, 0, 0);
     }
 
-    return inner_OverLay_ShowRgn(params->rects_hdl, chn, 0, 0, state);
+    return LOCALSDK_OK;
 }
 
 /* ============================================================================
