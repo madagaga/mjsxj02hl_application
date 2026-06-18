@@ -2250,10 +2250,57 @@ int local_sdk_set_alarm_switch(int type, bool state) {
    OSD SUBSYSTEM (On-Screen Display) - HISILICON IMPLEMENTATION
    ============================================================================ */
 
+/* ---- OSD bitmap font (8x8, public-domain font8x8_basic subset) -------------
+ * Only the glyphs used by the timestamp are embedded: digits, '-', ':' and
+ * space. Each glyph is 8 rows; within a row bit0 is the leftmost pixel. */
+static const unsigned char FONT_DIGIT[10][8] = {
+    {0x3E,0x63,0x73,0x7B,0x6F,0x67,0x3E,0x00}, /* 0 */
+    {0x0C,0x0E,0x0C,0x0C,0x0C,0x0C,0x3F,0x00}, /* 1 */
+    {0x1E,0x33,0x30,0x1C,0x06,0x33,0x3F,0x00}, /* 2 */
+    {0x1E,0x33,0x30,0x1C,0x30,0x33,0x1E,0x00}, /* 3 */
+    {0x38,0x3C,0x36,0x33,0x7F,0x30,0x78,0x00}, /* 4 */
+    {0x3F,0x03,0x1F,0x30,0x30,0x33,0x1E,0x00}, /* 5 */
+    {0x1C,0x06,0x03,0x1F,0x33,0x33,0x1E,0x00}, /* 6 */
+    {0x3F,0x33,0x30,0x18,0x0C,0x0C,0x0C,0x00}, /* 7 */
+    {0x1E,0x33,0x33,0x1E,0x33,0x33,0x1E,0x00}, /* 8 */
+    {0x1E,0x33,0x33,0x3E,0x30,0x18,0x0E,0x00}, /* 9 */
+};
+static const unsigned char FONT_DASH[8]  = {0x00,0x00,0x00,0x3F,0x00,0x00,0x00,0x00};
+static const unsigned char FONT_COLON[8] = {0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00};
+static const unsigned char FONT_SPACE[8] = {0,0,0,0,0,0,0,0};
+
+static const unsigned char *sdk_osd_font_glyph(char c) {
+    if (c >= '0' && c <= '9') return FONT_DIGIT[c - '0'];
+    if (c == '-') return FONT_DASH;
+    if (c == ':') return FONT_COLON;
+    return FONT_SPACE;
+}
+
+/* Draw one scaled 8x8 glyph into an ARGB1555 canvas at (x0,y0). */
+static void sdk_osd_draw_glyph(uint16_t *base, uint32_t stride_px,
+                               uint32_t canvas_w, uint32_t canvas_h,
+                               int x0, int y0, const unsigned char *g,
+                               int scale, uint16_t color) {
+    for (int row = 0; row < 8; row++) {
+        for (int col = 0; col < 8; col++) {
+            if (!((g[row] >> col) & 1)) continue;
+            for (int sy = 0; sy < scale; sy++) {
+                int py = y0 + row * scale + sy;
+                if (py < 0 || (uint32_t)py >= canvas_h) continue;
+                for (int sx = 0; sx < scale; sx++) {
+                    int px = x0 + col * scale + sx;
+                    if (px < 0 || (uint32_t)px >= canvas_w) continue;
+                    base[py * stride_px + px] = color;
+                }
+            }
+        }
+    }
+}
+
 /**
  * @brief Internal helper to show/hide and attach/detach OSD regions
  */
-static int32_t inner_OverLay_ShowRgn(RGN_HANDLE handle, int chn, bool show) {
+static int32_t inner_OverLay_ShowRgn(RGN_HANDLE handle, int chn, int x, int y, bool show) {
     MPP_CHN_S stChn;
     RGN_CHN_ATTR_S stChnAttr;
     HI_S32 result;
@@ -2270,12 +2317,12 @@ static int32_t inner_OverLay_ShowRgn(RGN_HANDLE handle, int chn, bool show) {
             memset(&stChnAttr, 0, sizeof(stChnAttr));
             stChnAttr.bShow = HI_TRUE;
             stChnAttr.enType = OVERLAY_RGN;
-            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = 0;
-            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = 0;
-            stChnAttr.unChnAttr.stOverlayChn.u32BgAlpha = 128;
-            stChnAttr.unChnAttr.stOverlayChn.u32FgAlpha = 128;
+            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32X = x;
+            stChnAttr.unChnAttr.stOverlayChn.stPoint.s32Y = y;
+            stChnAttr.unChnAttr.stOverlayChn.u32BgAlpha = 0;   /* transparent bg */
+            stChnAttr.unChnAttr.stOverlayChn.u32FgAlpha = 255; /* opaque text   */
             stChnAttr.unChnAttr.stOverlayChn.u32Layer = 0;
-            
+
             result = HI_MPI_RGN_AttachToChn(handle, &stChn, &stChnAttr);
             if (result != HI_SUCCESS) {
                 sdk_log("[sdk][osd] HI_MPI_RGN_AttachToChn failed: 0x%x\n", result);
@@ -2344,7 +2391,10 @@ int local_sdk_video_osd_update_logo(int chn, bool state) {
         sdk_osd_region_init(params->logo_hdl, 128, 64);
     }
 
-    return inner_OverLay_ShowRgn(params->logo_hdl, chn, state);
+    /* NOTE: the logo bitmap itself is not yet rendered (no embedded MI asset),
+       so this region is currently empty/transparent. */
+    return inner_OverLay_ShowRgn(params->logo_hdl, chn,
+                                 params->opts.oemlogo_x, params->opts.oemlogo_y, state);
 }
 
 /**
@@ -2357,22 +2407,55 @@ int local_sdk_video_osd_update_timestamp(int chn, bool state, struct tm *timesta
 
     if (!params) return LOCALSDK_ERROR;
 
+    /* Glyph scale: base 3 (≈24px tall @1080p), adjusted by config size. */
+    int scale = 3;
+    if (params->opts.datetime_increase > 1) scale *= (int)params->opts.datetime_increase;
+    if (params->opts.datetime_reduce   > 1) scale /= (int)params->opts.datetime_reduce;
+    if (scale < 1) scale = 1;
+    int shadow = (scale >= 2) ? 2 : 1; /* drop-shadow offset for legibility */
+
     if (params->timestamp_hdl == 0) {
         params->timestamp_hdl = chn * 3 + 0;
-        sdk_osd_region_init(params->timestamp_hdl, 400, 40);
+        /* Size to fit "YYYY-MM-DD HH:MM:SS" (19 chars) + shadow margin. */
+        uint32_t w = (uint32_t)(20 * 8 * scale + shadow);
+        uint32_t h = (uint32_t)(8 * scale + shadow);
+        w = (w + 1) & ~1u;
+        h = (h + 1) & ~1u;
+        sdk_osd_region_init(params->timestamp_hdl, w, h);
     }
 
-    if (state) {
+    if (state && timestamp) {
+        char buf[24];
+        int slen = snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+                            timestamp->tm_year + 1900, timestamp->tm_mon + 1,
+                            timestamp->tm_mday, timestamp->tm_hour,
+                            timestamp->tm_min, timestamp->tm_sec);
+
         result = HI_MPI_RGN_GetCanvasInfo(params->timestamp_hdl, &stCanvas);
         if (result == HI_SUCCESS) {
-            /* TODO: Implement bitmap text rendering here */
-            /* For now, just clear/fill a small area to show it works */
-            memset((void *)(uintptr_t)stCanvas.u64VirtAddr, 0, stCanvas.u32Stride * stCanvas.stSize.u32Height);
+            uint16_t *pix       = (uint16_t *)(uintptr_t)stCanvas.u64VirtAddr;
+            uint32_t  stride_px = stCanvas.u32Stride / 2;
+            uint32_t  cw        = stCanvas.stSize.u32Width;
+            uint32_t  ch        = stCanvas.stSize.u32Height;
+
+            /* Clear to transparent */
+            memset(pix, 0, stCanvas.u32Stride * ch);
+
+            int x = 0;
+            for (int i = 0; i < slen; i++) {
+                const unsigned char *g = sdk_osd_font_glyph(buf[i]);
+                /* black drop shadow first, then white text on top */
+                sdk_osd_draw_glyph(pix, stride_px, cw, ch, x + shadow, shadow, g, scale, 0x8000);
+                sdk_osd_draw_glyph(pix, stride_px, cw, ch, x, 0, g, scale, 0xFFFF);
+                x += 8 * scale;
+                if ((uint32_t)(x + 8 * scale) > cw) break;
+            }
             HI_MPI_RGN_UpdateCanvas(params->timestamp_hdl);
         }
     }
 
-    return inner_OverLay_ShowRgn(params->timestamp_hdl, chn, state);
+    return inner_OverLay_ShowRgn(params->timestamp_hdl, chn,
+                                 params->opts.datetime_x, params->opts.datetime_y, state);
 }
 
 /**
@@ -2422,7 +2505,7 @@ int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECT
         }
     }
 
-    return inner_OverLay_ShowRgn(params->rects_hdl, chn, state);
+    return inner_OverLay_ShowRgn(params->rects_hdl, chn, 0, 0, state);
 }
 
 /* ============================================================================
