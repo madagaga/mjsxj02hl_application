@@ -111,7 +111,7 @@ static const ISP_PUB_ATTR_S s_isp_pub_attr = {
        colour). The board mounts the sensor 180° and applies MIRROR_FLIP at the
        sensor, which rotates the Bayer phase 180°: BGGR -> RGGB. So the ISP must
        be told RGGB to match the flipped readout (BGGR there gives a magenta cast). */
-    .enBayer      = BAYER_RGGB,
+    .enBayer      = BAYER_GBRG,  /* TEST: mirror-flip readout phase */
     .enWDRMode    = WDR_MODE_NONE,
     .u8SnsMode    = 0
 };
