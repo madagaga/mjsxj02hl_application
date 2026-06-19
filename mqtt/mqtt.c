@@ -18,6 +18,7 @@
 #include "./../logger/logger.h"
 #include "./../localsdk/init.h"
 #include "./../localsdk/localsdk.h"
+#include "./../localsdk/video/video.h"
 #include "./../localsdk/speaker/speaker.h"
 #include "./../configs/configs.h"
 #include "./../yyjson/src/yyjson.h"
@@ -382,9 +383,9 @@ static int mqtt_message_callback(void *context, char *topicName, int topicLen, M
                 yyjson_val *json_filename = yyjson_obj_get(json_root, "filename");
                 if(result &= yyjson_is_str(json_filename)) {
                     LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "yyjson_is_str(json_filename)");
-                    if(result &= (local_sdk_video_get_jpeg(LOCALSDK_VIDEO_SECONDARY_CHANNEL, (char *) yyjson_get_str(json_filename)) == LOCALSDK_OK)) {
-                        LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_video_get_jpeg()");
-                    } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_video_get_jpeg()");
+                    if(result &= (video_get_jpeg(LOCALSDK_VIDEO_SECONDARY_CHANNEL, (char *) yyjson_get_str(json_filename)) == LOCALSDK_OK)) {
+                        LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "video_get_jpeg()");
+                    } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "video_get_jpeg()");
                 } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "yyjson_is_str(json_filename)");
             // Set volume
             } else if(strcmp(yyjson_get_str(json_action), "set_volume") == 0) {

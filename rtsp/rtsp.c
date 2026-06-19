@@ -36,8 +36,8 @@ static void librtspserver_connected(uint32_t session_id, const char *peer_ip, ui
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
     
     int channel = (session_id == secondary_session ? LOCALSDK_VIDEO_SECONDARY_CHANNEL : LOCALSDK_VIDEO_PRIMARY_CHANNEL);
-    if(local_sdk_video_force_I_frame(channel) == LOCALSDK_OK) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_video_force_I_frame()");
-    else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "local_sdk_video_force_I_frame()");
+    if(video_force_i_frame(channel) == LOCALSDK_OK) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "video_force_i_frame()");
+    else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "video_force_i_frame()");
     
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed.");
 }

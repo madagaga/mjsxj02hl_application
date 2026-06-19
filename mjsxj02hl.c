@@ -16,6 +16,7 @@
 #include "./logger/logger.h"
 #include "./localsdk/localsdk.h"
 #include "./localsdk/init.h"
+#include "./localsdk/video/video.h"
 #include "./configs/configs.h"
 #include "./mqtt/mqtt.h"
 #include "./rtsp/rtsp.h"
@@ -122,22 +123,22 @@ int main(int argc, char **argv) {
                     }
 
                     // Best-effort: request I-frame before snapshot
-                    local_sdk_video_force_I_frame(LOCALSDK_VIDEO_SECONDARY_CHANNEL);
+                    video_force_i_frame(LOCALSDK_VIDEO_SECONDARY_CHANNEL);
 
                     int attempt = 0;
                     for(attempt = 0; attempt < 3; attempt++) {
-                        if(local_sdk_video_get_jpeg(LOCALSDK_VIDEO_SECONDARY_CHANNEL, argv[2]) == LOCALSDK_OK) {
+                        if(video_get_jpeg(LOCALSDK_VIDEO_SECONDARY_CHANNEL, argv[2]) == LOCALSDK_OK) {
                             flock(lock_fd, LOCK_UN);
                             close(lock_fd);
                             return EX_OK;
                         }
                         usleep(150000);
-                        local_sdk_video_force_I_frame(LOCALSDK_VIDEO_SECONDARY_CHANNEL);
+                        video_force_i_frame(LOCALSDK_VIDEO_SECONDARY_CHANNEL);
                     }
 
                     flock(lock_fd, LOCK_UN);
                     close(lock_fd);
-                    printf("Error: local_sdk_video_get_jpeg() failed after retries!\n");
+                    printf("Error: video_get_jpeg() failed after retries!\n");
                     return EX_SOFTWARE;
                 } else {
                     printf("Error: main thread of mjsxj02hl application is not running!\n");

@@ -43,12 +43,6 @@ int localsdk_destory();
 // Get SDK version
 int localsdk_get_version();
 
-// Get the changed resolution type
-int inner_change_resulu_type(int resolution, int *result);
-
-// Get picture size
-int SAMPLE_COMM_SYS_GetPicSize(int resolution, LOCALSDK_PICTURE_SIZE *size);
-
 /********************
         VIDEO
 ********************/
@@ -104,46 +98,6 @@ typedef struct {
     uint32_t jpeg;
     uint32_t reserved;      // Reserved/padding
 } LOCALSDK_VIDEO_OPTIONS;
-
-// Init video (flip/mirror are the app-requested orientation, applied at the
-// sensor by the board; default in .conf corrects the 180° PCB mount).
-int local_sdk_video_init(int fps, int flip, int mirror);
-
-// Create video
-int local_sdk_video_create(int chn, LOCALSDK_VIDEO_OPTIONS *options);
-
-// Set video parameters
-int local_sdk_video_set_parameters(int chn, LOCALSDK_VIDEO_OPTIONS *options);
-
-// Set video frame callback
-int local_sdk_video_set_encode_frame_callback(int chn, int (*callback)(LOCALSDK_H26X_FRAME_INFO *frameInfo));
-// Set YUV frame callback (same structure as encoded for now)
-int local_sdk_video_set_yuv_frame_callback(int chn, int (*callback)(LOCALSDK_H26X_FRAME_INFO *frameInfo));
-
-// Set video algo module callback
-int local_sdk_video_set_algo_module_register_callback(int (*callback)());
-int local_sdk_video_set_algo_module_unregister_callback(int (*callback)());
-
-// Start video
-int local_sdk_video_start(int chn);
-
-// Stop video
-int local_sdk_video_stop(int chn, bool state);
-
-// Run video
-int local_sdk_video_run(int chn);
-
-// Save video image to jpeg file
-int local_sdk_video_get_jpeg(int chn, char *file);
-
-// Request IDR frame
-int local_sdk_video_force_I_frame(int chn);
-
-// TODO:
-int local_sdk_video_set_brightness(int param_1, int param_2, int param_3, int param_4);
-int local_sdk_video_set_flip(int param_1, int param_2);
-int local_sdk_video_set_fps(int param_1, int param_2, int param_3, int param_4);
-int local_sdk_video_set_kbps(int param_1, int param_2);
 
 /********************
         AUDIO
