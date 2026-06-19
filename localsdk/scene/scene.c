@@ -18,13 +18,16 @@
  *   [static_ca]        — chromatic aberration enable flag
  *   [static_drc]       — dynamic range compression (gated by [module_state])
  *   [static_sharpen]   — edge/texture sharpening, per-ISO tables (gated)
- *   [module_state]     — per-module enable flags (bStaticDRC, bStaticSharpen)
+ *   [dynamic_linear_drc] — per-ISO DRC strength, re-applied at runtime by a thread
+ *   [module_state]     — per-module flags (bStaticDRC/bStaticSharpen/bDynamicLinearDrc)
  */
 
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <pthread.h>
 
 #include "hi_type.h"
 #include "hi_comm_isp.h"
@@ -92,6 +95,14 @@ typedef struct {
     /* [module_state] — only the flags we act on */
     HI_BOOL mod_static_drc;
     HI_BOOL mod_static_sharpen;
+    HI_BOOL mod_dyn_lineardrc;
+
+    /* [dynamic_linear_drc] — per-ISO DRC strength (overrides the static strength
+       at runtime; this is why the original is not over-bright in daylight). */
+    HI_BOOL dld_enable;
+    HI_U32  dld_iso_cnt;
+    HI_U32  dld_iso_level[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  dld_strength[ISP_AUTO_ISO_STRENGTH_NUM];
 
     /* [static_drc] */
     HI_BOOL drc_enable;
@@ -126,6 +137,11 @@ static scene_params_t g_day;
 static scene_params_t g_night;
 static int g_initialized = 0;
 static HI_U32 g_target_fps = 20;
+
+/* Currently active profile (day or night) for the dynamic DRC thread. */
+static const scene_params_t *g_active = NULL;
+static pthread_t    g_dynThread = 0;
+static volatile int g_dynRun    = 0;
 
 /* -------------------------------------------------------------------------
  * Value parsing helpers
@@ -279,6 +295,8 @@ static int scene_handler(void *user, const char *section,
             p->mod_static_drc     = atoi(v) ? HI_TRUE : HI_FALSE;
         else if (strcasecmp(name, "bStaticSharpen") == 0)
             p->mod_static_sharpen = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "bDynamicLinearDrc") == 0)
+            p->mod_dyn_lineardrc  = atoi(v) ? HI_TRUE : HI_FALSE;
 
     } else if (strcasecmp(section, "static_drc") == 0) {
         /* Keys before DRCToneMappingValue parse fine; the 200-value tone-mapping
@@ -342,6 +360,16 @@ static int scene_handler(void *user, const char *section,
         } else if (strcasecmp(name, "AutoMaxSharpGain") == 0) {
             parse_u16_arr(v, p->shp_max_sharp_gain, ISP_AUTO_ISO_STRENGTH_NUM);
         }
+
+    } else if (strcasecmp(section, "dynamic_linear_drc") == 0) {
+        if      (strcasecmp(name, "Enable") == 0)
+            p->dld_enable    = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "IsoCnt") == 0)
+            p->dld_iso_cnt   = (HI_U32)atoi(v);
+        else if (strcasecmp(name, "IsoLevel") == 0)
+            parse_u32_arr(v, p->dld_iso_level, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "Strength") == 0)
+            parse_u16_arr(v, p->dld_strength, ISP_AUTO_ISO_STRENGTH_NUM);
     }
 
     return 1;
@@ -654,6 +682,63 @@ static void apply_sharpen(const scene_params_t *p)
                attr.stAuto.au16EdgeStr[0][0], attr.stAuto.au16MaxSharpGain[0]);
 }
 
+/* Dynamic linear DRC — the original modulates the DRC strength per-ISO at
+   runtime ([dynamic_linear_drc]); without it our fixed static strength (512)
+   over-brightens in daylight (low ISO), washing the image and degrading IVP
+   detection. Faithful to libsceneauto HI_SCENE_SetDynamicLinearDrc: interpolate
+   the strength from the per-ISO table and write it to the DRC attr (manual or
+   auto, matching enOpType). The smart-exposure term is omitted (≈0 here: at
+   ISO 2730 the table alone gives 179, matching the original's /proc dump). */
+static HI_U16 dld_interp(const scene_params_t *p, HI_U32 iso)
+{
+    HI_U32 n = p->dld_iso_cnt;
+    if (n == 0) return 0;
+    if (n > ISP_AUTO_ISO_STRENGTH_NUM) n = ISP_AUTO_ISO_STRENGTH_NUM;
+    if (iso <= p->dld_iso_level[0])     return p->dld_strength[0];
+    if (iso >= p->dld_iso_level[n - 1]) return p->dld_strength[n - 1];
+    for (HI_U32 i = 1; i < n; i++) {
+        if (iso <= p->dld_iso_level[i]) {
+            HI_S32 lo = (HI_S32)p->dld_iso_level[i - 1], hi = (HI_S32)p->dld_iso_level[i];
+            HI_S32 slo = p->dld_strength[i - 1], shi = p->dld_strength[i];
+            if (hi == lo) return (HI_U16)slo;
+            return (HI_U16)(slo + (shi - slo) * ((HI_S32)iso - lo) / (hi - lo));
+        }
+    }
+    return p->dld_strength[n - 1];
+}
+
+static void apply_dynamic_drc(const scene_params_t *p, HI_U32 iso)
+{
+    if (!p || !p->mod_dyn_lineardrc || !p->dld_enable) return;
+
+    ISP_DRC_ATTR_S attr;
+    if (HI_MPI_ISP_GetDRCAttr(0, &attr) != HI_SUCCESS) return;
+
+    HI_U16 s = dld_interp(p, iso);
+    if (s > 512) s = 512; /* SDK clamp */
+    /* Write to whichever slot the current op-type uses. */
+    attr.stManual.u16Strength = s;
+    attr.stAuto.u16Strength   = s;
+    HI_MPI_ISP_SetDRCAttr(0, &attr);
+}
+
+/* Polls the ISP exposure ISO once per second and re-applies the per-ISO DRC
+   strength for the active (day/night) profile. */
+static void *scene_dyn_thread(void *arg)
+{
+    (void)arg;
+    while (g_dynRun) {
+        const scene_params_t *p = g_active;
+        if (p) {
+            ISP_EXP_INFO_S exp;
+            if (HI_MPI_ISP_QueryExposureInfo(0, &exp) == HI_SUCCESS)
+                apply_dynamic_drc(p, exp.u32ISO);
+        }
+        sleep(1);
+    }
+    return NULL;
+}
+
 static void apply_scene(const scene_params_t *p)
 {
     apply_ae(p);
@@ -693,6 +778,18 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
 
     g_initialized = 1;
     g_target_fps = (target_fps > 0) ? target_fps : 20;
+    g_active = &g_day;
+
+    /* Start the per-ISO dynamic DRC thread (if the day profile enables it). */
+    if (!g_dynRun && g_day.mod_dyn_lineardrc) {
+        g_dynRun = 1;
+        if (pthread_create(&g_dynThread, NULL, scene_dyn_thread, NULL) != 0) {
+            g_dynRun = 0;
+            LOGGER(LOGGER_LEVEL_WARNING, "[scene] dynamic DRC thread start failed");
+        } else {
+            LOGGER(LOGGER_LEVEL_INFO, "[scene] dynamic linear DRC active (iso-adaptive strength)");
+        }
+    }
     LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized: day sat[0]=%u nr_fine[0]=%u gain_max=%u ccm_op=%d awb=%d staticWB=[%u,%u,%u,%u]",
            g_day.sat[0], g_day.nr_fine_str[0], g_day.ae_sys_gain_max, g_day.ccm_op_type,
            (int)g_day.awb_present,
@@ -706,6 +803,7 @@ int scene_set_day(void)
 {
     if (!g_initialized) return -1;
     LOGGER(LOGGER_LEVEL_INFO, "[scene] applying day scene (sat[0]=%u)", g_day.sat[0]);
+    g_active = &g_day;
     apply_scene(&g_day);
     return 0;
 }
@@ -714,6 +812,7 @@ int scene_set_night(void)
 {
     if (!g_initialized) return -1;
     LOGGER(LOGGER_LEVEL_INFO, "[scene] applying night scene (sat[0]=%u)", g_night.sat[0]);
+    g_active = &g_night;
     apply_scene(&g_night);
     return 0;
 }

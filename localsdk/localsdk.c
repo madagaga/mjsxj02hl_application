@@ -3071,6 +3071,11 @@ static int32_t sdk_ivp_process_and_dispatch(VIDEO_FRAME_INFO_S *frame) {
     ev.type  = LOCALSDK_ALARM_TYPE_HUMANOID;
     ev.state = (n > 0) ? 1 : 0;
 
+    if (n > 0)
+        sdk_log("[sdk][ivp] HUMANOID detected: %d obj (class_num=%d rect_num=%d "
+                "box0=%u,%u %ux%u)\n", n, objs.class_num, objs.obj_class[0].rect_num,
+                ev.objects[0].x, ev.objects[0].y, ev.objects[0].width, ev.objects[0].height);
+
     sdk_alarm_run_callback(&ev);
     return LOCALSDK_OK;
 }
