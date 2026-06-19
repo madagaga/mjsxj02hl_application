@@ -106,7 +106,7 @@ static const VI_PIPE_ATTR_S s_vi_pipe_attr = {
 static const ISP_PUB_ATTR_S s_isp_pub_attr = {
     .stWndRect    = {0, 0, JXF22_WIDTH, JXF22_HEIGHT},
     .stSnsSize    = {JXF22_WIDTH, JXF22_HEIGHT},
-    .f32FrameRate = (float)JXF22_FPS_NATIVE,  /* native; app retimes via VPSS */
+    .f32FrameRate = (float)JXF22_FPS_NATIVE,  /* overridden to s_cfg.fps in sensor_isp_init */
     /* Native (NORMAL readout) Bayer phase. The effective phase depends on the
        sensor mirror/flip applied at bring-up and is recomputed in
        sensor_isp_init() — see jxf22_bayer_phase(). */
@@ -378,8 +378,13 @@ static HI_S32 sensor_isp_init(void) {
     memcpy(&stPubAttr, &s_isp_pub_attr, sizeof(stPubAttr));
     /* Match the ISP Bayer phase to the effective sensor orientation. */
     stPubAttr.enBayer = jxf22_bayer_phase(s_cfg.mirror, s_cfg.flip);
-    LOGGER(LOGGER_LEVEL_INFO, "[sensor][jxf22] enBayer=%d (mirror=%d flip=%d)",
-           (int)stPubAttr.enBayer, (int)s_cfg.mirror, (int)s_cfg.flip);
+    /* Run the whole ISP/AE pipeline at the board target fps. Leaving this at the
+       sensor native rate makes the AE call cmos_fps_set(native) and reprogram the
+       VMAX back to native, overriding sensor_set_fps() — so the sensor would run
+       at native (30) instead of the target (20), losing low-light exposure time. */
+    stPubAttr.f32FrameRate = (HI_FLOAT)s_cfg.fps;
+    LOGGER(LOGGER_LEVEL_INFO, "[sensor][jxf22] enBayer=%d fps=%.0f (mirror=%d flip=%d)",
+           (int)stPubAttr.enBayer, stPubAttr.f32FrameRate, (int)s_cfg.mirror, (int)s_cfg.flip);
     result = HI_MPI_ISP_SetPubAttr(0, &stPubAttr);
     if (result != HI_SUCCESS) {
         LOGGER(LOGGER_LEVEL_ERROR, "[sensor][jxf22] HI_MPI_ISP_SetPubAttr failed: 0x%x", result);
