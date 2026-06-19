@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file localsdk-clean.c
  * @brief Cleaned and refactored version of localsdk.c
  * 
@@ -33,7 +33,6 @@
 
 /* Hisilicon MPP */
 #include "hi_mipi.h"
-#include "acodec.h"
 #include "hi_comm_sys.h"
 #include "hi_comm_isp.h"
 #include "hi_comm_3a.h"
@@ -51,10 +50,6 @@
 #include "hi_comm_region.h"
 #include "mpi_region.h"
 #include "mpi_vb.h"
-#include "mpi_ai.h"
-#include "mpi_ao.h"
-#include "mpi_aenc.h"
-#include "mpi_adec.h"
 #include "hi_ivp.h"
 
 #include "hi_buffer.h"
@@ -92,7 +87,7 @@
    GLOBAL STATE AND CALLBACKS
    ============================================================================ */
 
-/* Board config pointer — set once in localsdk_init(), used everywhere.
+/* Board config pointer â€” set once in localsdk_init(), used everywhere.
    localsdk is blind to the sensor: behaviour via board callbacks, sizing via
    the BOARD_* compile-time constants. */
 static const board_cfg_t  *g_board_cfg  = NULL;
@@ -131,11 +126,6 @@ static int g_keydownTimeout = 0;
 /* Auto night light polling thread */
 static pthread_t        g_nightLightThread = 0;
 static volatile int     g_nightLightRun    = 0;
-
-/* Speaker and Audio state */
-static int32_t g_speakerRunState = 0; /* 3 = started */
-static pthread_mutex_t g_speakerMutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t g_audioMutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Alarm callbacks (small fixed pool, per decompiled behavior) */
 #define SDK_ALARM_CB_MAX 10
@@ -505,13 +495,13 @@ int localsdk_init() {
 int localsdk_destory() {
     sdk_log("[sdk] Destroying SDK\n");
 
-    /* Stop VENC capture threads + unbind VPSS→VENC + destroy VENC channels. */
+    /* Stop VENC capture threads + unbind VPSSâ†’VENC + destroy VENC channels. */
     video_free();
 
-    /* Unbind VI→VPSS, stop VPSS group, destroy VPSS group. */
+    /* Unbind VIâ†’VPSS, stop VPSS group, destroy VPSS group. */
     video_deinit();
 
-    /* VI teardown — handles owned by the board/sensor, fetched generically. */
+    /* VI teardown â€” handles owned by the board/sensor, fetched generically. */
     const board_cfg_t *board = platform_get_board_cfg();
     VI_DEV viDev = 0; VI_PIPE viPipe = 0; VI_CHN viChn = 0;
     if (board && board->pfnGetVi)
@@ -540,530 +530,8 @@ int localsdk_get_version() {
 
 /* Video subsystem implementation moved to video/video.c (Phase 1 refactoring). */
 
-/* ============================================================================
-   AUDIO SUBSYSTEM - HISILICON IMPLEMENTATION
-   ============================================================================ */
-
-/* Global audio state — ai_dev/ao_dev initialised from board cfg in local_sdk_audio_init() */
-static AUDIO_DEV g_aiDev = 0;
-static AI_CHN g_aiChn = 0;
-static AUDIO_DEV g_aoDev = 0;
-static AO_CHN g_aoChn = 0;
-static AENC_CHN g_aencChn = 0;     /* Audio Encoder Channel */
-static ADEC_CHN g_adecChn = 0;     /* Audio Decoder Channel */
-static int32_t g_audioStarted = 0;
-#define MAX_AENC_CALLBACKS 4
-static int (*g_aencCb[MAX_AENC_CALLBACKS])(LOCALSDK_AUDIO_G711_FRAME_INFO *frameInfo) = {NULL};
-static int g_aencCbCount = 0;
-static pthread_t g_audioAiThread = 0;
-static pthread_t g_audioAencThread = 0;
-static volatile int g_audioRunning = 0;
-
-/* Configure inner acodec via /dev/acodec (from trace: volume=60) */
-static void sdk_audio_inner_codec_cfg(void) {
-    int fd = open("/dev/acodec", O_RDWR);
-    if (fd < 0) return;
-
-    ioctl(fd, ACODEC_SOFT_RESET_CTRL, NULL);
-
-    ACODEC_FS_E fs = ACODEC_FS_8000;
-    ioctl(fd, ACODEC_SET_I2S1_FS, &fs);
-
-    ACODEC_MIXER_E input_mode = ACODEC_MIXER_IN1;
-    ioctl(fd, ACODEC_SET_MIXER_MIC, &input_mode);
-
-    int vol = 60;
-    printf("[SDK-AUDIO]SAMPLE_INNER_CODEC_CfgAudio: set acodec volume:[%d]\n", vol);
-    ioctl(fd, ACODEC_SET_INPUT_VOL, &vol);
-
-    close(fd);
-}
-
-/**
- * @brief Initialize audio subsystem with HISILICON AI/AO (G.711A: 8kHz, 16-bit, mono)
- */
-int local_sdk_audio_init() {
-    AIO_ATTR_S stAioAttr;
-    int32_t result;
-
-    sdk_log("[sdk][audio] Initializing audio subsystem\n");
-
-    g_aiDev = g_board_cfg->ai_dev;
-    g_aoDev = g_board_cfg->ao_dev;
-
-    memset(&stAioAttr, 0, sizeof(AIO_ATTR_S));
-    stAioAttr.enSamplerate   = AUDIO_SAMPLE_RATE_8000; /* G.711 standard */
-    stAioAttr.enBitwidth     = AUDIO_BIT_WIDTH_16;
-    stAioAttr.enWorkmode     = AIO_MODE_I2S_MASTER;
-    stAioAttr.u32EXFlag      = 0;
-    stAioAttr.u32FrmNum      = 30;
-    stAioAttr.u32PtNumPerFrm = 320; /* 40ms at 8kHz */
-    stAioAttr.u32ChnCnt      = 1;
-
-    result = HI_MPI_AI_SetPubAttr(g_aiDev, &stAioAttr);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to set AI attributes: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    result = HI_MPI_AI_Enable(g_aiDev);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to enable AI: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    result = HI_MPI_AO_SetPubAttr(g_aoDev, &stAioAttr);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to set AO attributes: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    result = HI_MPI_AO_Enable(g_aoDev);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to enable AO: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    sdk_audio_inner_codec_cfg();
-
-    sdk_log("[sdk][audio] Audio subsystem initialized\n");
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Create audio channel with HISILICON AI
- */
-int local_sdk_audio_create(int chn) {
-    int32_t result;
-    
-    if (chn < 0 || chn > 15) {
-        sdk_log("[sdk][audio] Invalid channel: %d\n", chn);
-        return LOCALSDK_ERROR;
-    }
-    
-    sdk_log("[sdk][audio] Creating audio channel %d\n", chn);
-    
-    /* Enable AI channel */
-    result = HI_MPI_AI_EnableChn(g_aiDev, chn);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to enable AI channel: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    g_aiChn = chn;
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Set audio parameters via HISILICON
- */
-int local_sdk_audio_set_parameters(int chn, LOCALSDK_AUDIO_OPTIONS *options) {
-    AI_CHN_PARAM_S stChnParam;
-    int32_t result;
-    
-    if (chn < 0 || !options) {
-        sdk_log("[sdk][audio] Invalid channel or options\n");
-        return LOCALSDK_ERROR;
-    }
-    
-    sdk_log("[sdk][audio] Setting parameters for channel %d\n", chn);
-    
-    /* Get current channel parameters */
-    result = HI_MPI_AI_GetChnParam(g_aiDev, chn, &stChnParam);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to get AI channel params: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    /* Update parameters if needed */
-    /* TODO: Update stChnParam based on options */
-    
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Enable/disable AEC (Acoustic Echo Cancellation)
- */
-int local_sdk_audio_set_aec_enable(int chn, bool state) {
-    int32_t result;
-    
-    sdk_log("[sdk][audio] AEC %s on channel %d\n", state ? "enabled" : "disabled", chn);
-    
-    if (state) {
-        /* Enable VQE (Voice Quality Enhancement) which includes AEC */
-        result = HI_MPI_AI_EnableVqe(g_aiDev, chn);
-    } else {
-        result = HI_MPI_AI_DisableVqe(g_aiDev, chn);
-    }
-    
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to set AEC: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Set audio volume
- */
-int local_sdk_audio_set_volume(int chn, int value) {
-    int32_t result;
-    
-    if (value < -60 || value > 30) {
-        sdk_log("[sdk][audio] Invalid volume: %d (must be -60 to 30 dB)\n", value);
-        return LOCALSDK_ERROR;
-    }
-    
-    sdk_log("[sdk][audio] Setting volume on channel %d to %d dB\n", chn, value);
-    
-    result = HI_MPI_AO_SetVolume(g_aoDev, value);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to set volume: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-    
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Set audio encode callback (called twice per trace: for primary and secondary)
- */
-int local_sdk_audio_set_encode_frame_callback(int chn, int (*callback)(LOCALSDK_AUDIO_G711_FRAME_INFO *frameInfo)) {
-    printf("[SDK-THREAD]dbg: Set Audio Enc Callback Doing...\n");
-    if (callback && g_aencCbCount < MAX_AENC_CALLBACKS) {
-        g_aencCb[g_aencCbCount++] = callback;
-    }
-    return LOCALSDK_OK;
-}
-
-/* AI capture thread: AI -> AENC */
-static void *sdk_audio_ai_thread(void *arg) {
-    (void)arg;
-    AUDIO_FRAME_S stFrame;
-    AEC_FRAME_S stAecFrm;
-    fd_set read_fds;
-    struct timeval tv;
-
-    AI_CHN_PARAM_S stParam;
-    if (HI_MPI_AI_GetChnParam(g_aiDev, g_aiChn, &stParam) == HI_SUCCESS) {
-        stParam.u32UsrFrmDepth = 30;
-        HI_MPI_AI_SetChnParam(g_aiDev, g_aiChn, &stParam);
-    }
-
-    int aiFd = HI_MPI_AI_GetFd(g_aiDev, g_aiChn);
-
-    while (g_audioRunning) {
-        FD_ZERO(&read_fds);
-        FD_SET(aiFd, &read_fds);
-        tv.tv_sec = 1; tv.tv_usec = 0;
-
-        int sel = select(aiFd + 1, &read_fds, NULL, NULL, &tv);
-        if (sel <= 0) continue;
-        if (!FD_ISSET(aiFd, &read_fds)) continue;
-
-        memset(&stAecFrm, 0, sizeof(stAecFrm));
-        if (HI_MPI_AI_GetFrame(g_aiDev, g_aiChn, &stFrame, &stAecFrm, HI_FALSE) != HI_SUCCESS)
-            continue;
-
-        HI_MPI_AENC_SendFrame(g_aencChn, &stFrame, &stAecFrm);
-        HI_MPI_AI_ReleaseFrame(g_aiDev, g_aiChn, &stFrame, &stAecFrm);
-    }
-    return NULL;
-}
-
-/* AENC stream thread: AENC -> callbacks */
-static void *sdk_audio_aenc_thread(void *arg) {
-    (void)arg;
-    AUDIO_STREAM_S stStream;
-    fd_set read_fds;
-    struct timeval tv;
-
-    int aencFd = HI_MPI_AENC_GetFd(g_aencChn);
-
-    while (g_audioRunning) {
-        FD_ZERO(&read_fds);
-        FD_SET(aencFd, &read_fds);
-        tv.tv_sec = 1; tv.tv_usec = 0;
-
-        int sel = select(aencFd + 1, &read_fds, NULL, NULL, &tv);
-        if (sel <= 0) continue;
-        if (!FD_ISSET(aencFd, &read_fds)) continue;
-
-        if (HI_MPI_AENC_GetStream(g_aencChn, &stStream, HI_FALSE) != HI_SUCCESS)
-            continue;
-
-        if (g_aencCbCount > 0) {
-            LOCALSDK_AUDIO_G711_FRAME_INFO fi;
-            memset(&fi, 0, sizeof(fi));
-            fi.data = (signed char *)stStream.pStream;
-            fi.size = stStream.u32Len;
-            fi.timestamp = stStream.u64TimeStamp;
-            for (int i = 0; i < g_aencCbCount; i++) {
-                if (g_aencCb[i]) g_aencCb[i](&fi);
-            }
-        }
-
-        HI_MPI_AENC_ReleaseStream(g_aencChn, &stStream);
-    }
-    return NULL;
-}
-
-/**
- * @brief Start audio processing
- */
-int local_sdk_audio_start() {
-    int32_t result;
-
-    sdk_log("[sdk][audio] Starting audio\n");
-
-    result = HI_MPI_AI_EnableChn(g_aiDev, g_aiChn);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to enable AI channel: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    result = HI_MPI_AO_EnableChn(g_aoDev, g_aoChn);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to enable AO channel: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    g_audioStarted = 1;
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Stop audio processing
- */
-int local_sdk_audio_stop() {
-    sdk_log("[sdk][audio] Stopping audio\n");
-    g_audioRunning = 0;
-    if (g_audioAiThread)   { pthread_join(g_audioAiThread, NULL);   g_audioAiThread = 0; }
-    if (g_audioAencThread) { pthread_join(g_audioAencThread, NULL); g_audioAencThread = 0; }
-    g_audioStarted = 0;
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Run audio - create AENC channel and start AI + AENC threads
- */
-int local_sdk_audio_run() {
-    AENC_CHN_ATTR_S stAencAttr;
-    int32_t result;
-
-    if (!g_audioStarted) return LOCALSDK_ERROR;
-    if (g_audioRunning)  return LOCALSDK_OK;
-
-    /* Enable VQE on AI channel */
-    HI_MPI_AI_EnableVqe(g_aiDev, g_aiChn);
-
-    /* Create AENC channel (G.711A). u32PtNumPerFrm must match the AI's
-       (320 = 40ms @ 8kHz); leaving it 0 makes CreateChn return ILLEGAL_PARAM. */
-    static AENC_ATTR_G711_S stAencG711;
-    memset(&stAencAttr, 0, sizeof(stAencAttr));
-    stAencAttr.enType         = PT_G711A;
-    stAencAttr.u32PtNumPerFrm = 320;
-    stAencAttr.u32BufSize     = 30;
-    stAencAttr.pValue         = &stAencG711;
-
-    result = HI_MPI_AENC_CreateChn(g_aencChn, &stAencAttr);
-    if (result != HI_SUCCESS && result != HI_ERR_AENC_EXIST) {
-        sdk_log("[sdk][audio] HI_MPI_AENC_CreateChn failed: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    g_audioRunning = 1;
-
-    if (pthread_create(&g_audioAiThread, NULL, sdk_audio_ai_thread, NULL) != 0) {
-        g_audioRunning = 0;
-        return LOCALSDK_ERROR;
-    }
-    if (pthread_create(&g_audioAencThread, NULL, sdk_audio_aenc_thread, NULL) != 0) {
-        g_audioRunning = 0;
-        pthread_join(g_audioAiThread, NULL);
-        g_audioAiThread = 0;
-        return LOCALSDK_ERROR;
-    }
-
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief End audio processing
- */
-int local_sdk_audio_end() {
-    sdk_log("[sdk][audio] Ending audio\n");
-    local_sdk_audio_stop();
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Destroy audio subsystem
- */
-int local_sdk_audio_destory() {
-    int32_t result;
-    
-    sdk_log("[sdk][audio] Destroying audio\n");
-    
-    /* Disable AI channel */
-    HI_MPI_AI_DisableVqe(g_aiDev, g_aiChn);
-    
-    /* Disable audio devices */
-    result = HI_MPI_AI_Disable(g_aiDev);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to disable AI: 0x%x\n", result);
-    }
-    
-    result = HI_MPI_AO_Disable(g_aoDev);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][audio] Failed to disable AO: 0x%x\n", result);
-    }
-    
-    return LOCALSDK_OK;
-}
-
-/* ============================================================================
-   SPEAKER SUBSYSTEM - HISILICON ADEC + AO
-   ============================================================================ */
-
-/**
- * @brief Initialize speaker decoder (ADEC)
- */
-int local_sdk_speaker_init() {
-    ADEC_CHN_ATTR_S stAdecAttr;
-    HI_S32 result;
-
-    sdk_log("[sdk][speaker] Initializing speaker (ADEC)\n");
-    
-    /* pValue must point to a protocol attr (G711); NULL -> ADEC NULL_PTR. */
-    static ADEC_ATTR_G711_S stAdecG711;
-    stAdecAttr.enType = PT_G711A;
-    stAdecAttr.u32BufSize = 20;
-    stAdecAttr.enMode = ADEC_MODE_STREAM;
-    stAdecAttr.pValue = &stAdecG711;
-
-    result = HI_MPI_ADEC_CreateChn(g_adecChn, &stAdecAttr);
-    if (result != HI_SUCCESS && result != HI_ERR_ADEC_EXIST) {
-        sdk_log("[sdk][speaker] HI_MPI_ADEC_CreateChn failed: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Set speaker parameters
- */
-int local_sdk_speaker_set_parameters(LOCALSDK_SPEAKER_OPTIONS *options) {
-    if (!options) return LOCALSDK_ERROR;
-    sdk_log("[sdk][speaker] Setting parameters\n");
-    /* TODO: Apply specific codec options if needed */
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Set speaker volume
- */
-int local_sdk_speaker_set_volume(int value) {
-    sdk_log("[sdk][speaker] Setting volume to %d dB\n", value);
-    return HI_MPI_AO_SetVolume(g_aoDev, value) == HI_SUCCESS ? LOCALSDK_OK : LOCALSDK_ERROR;
-}
-
-/**
- * @brief Mute/Unmute speaker
- */
-int local_sdk_speaker_mute() {
-    return HI_MPI_AO_SetMute(g_aoDev, HI_TRUE, NULL) == HI_SUCCESS ? LOCALSDK_OK : LOCALSDK_ERROR;
-}
-
-int local_sdk_speaker_unmute() {
-    return HI_MPI_AO_SetMute(g_aoDev, HI_FALSE, NULL) == HI_SUCCESS ? LOCALSDK_OK : LOCALSDK_ERROR;
-}
-
-/**
- * @brief Start speaker - Bind ADEC to AO
- */
-int local_sdk_speaker_start() {
-    MPP_CHN_S stSrcChn, stDestChn;
-    HI_S32 result;
-
-    sdk_log("[sdk][speaker] Starting speaker (Binding ADEC->AO)\n");
-
-    /* Bind ADEC to AO */
-    stSrcChn.enModId = HI_ID_ADEC;
-    stSrcChn.s32DevId = 0;
-    stSrcChn.s32ChnId = g_adecChn;
-
-    stDestChn.enModId = HI_ID_AO;
-    stDestChn.s32DevId = g_aoDev;
-    stDestChn.s32ChnId = g_aoChn;
-
-    result = HI_MPI_SYS_Bind(&stSrcChn, &stDestChn);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][speaker] HI_MPI_SYS_Bind ADEC->AO failed: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    result = HI_MPI_AO_EnableChn(g_aoDev, g_aoChn);
-    if (result != HI_SUCCESS) {
-        sdk_log("[sdk][speaker] HI_MPI_AO_EnableChn failed: 0x%x\n", result);
-        return LOCALSDK_ERROR;
-    }
-
-    pthread_mutex_lock(&g_speakerMutex);
-    g_speakerRunState = 3; /* Started */
-    pthread_mutex_unlock(&g_speakerMutex);
-
-    return LOCALSDK_OK;
-}
-
-/**
- * @brief Feed PCM data (raw 16-bit 16kHz)
- */
-int local_sdk_speaker_feed_pcm_data(void *data, int size) {
-    AUDIO_FRAME_S stFrame;
-    HI_S32 result;
-
-    if (!data || size <= 0) return LOCALSDK_ERROR;
-
-    memset(&stFrame, 0, sizeof(stFrame));
-    stFrame.enBitwidth = AUDIO_BIT_WIDTH_16;
-    stFrame.enSoundmode = AUDIO_SOUND_MODE_MONO;
-    stFrame.u32Len = size;
-    stFrame.u64VirAddr[0] = (HI_U8 *)data;
-    stFrame.u64PhyAddr[0] = 0; /* MPI will handle it if mapped correctly */
-
-    result = HI_MPI_AO_SendFrame(g_aoDev, g_aoChn, &stFrame, 1000);
-    return (result == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
-}
-
-/**
- * @brief Feed G.711 data (encoded)
- */
-int local_sdk_speaker_feed_g711_data(void *data, int size) {
-    AUDIO_STREAM_S stStream;
-    HI_S32 result;
-
-    if (!data || size <= 0) return LOCALSDK_ERROR;
-
-    memset(&stStream, 0, sizeof(stStream));
-    stStream.pStream = (HI_U8 *)data;
-    stStream.u32Len = size;
-    stStream.u64TimeStamp = 0;
-
-    result = HI_MPI_ADEC_SendStream(g_adecChn, &stStream, HI_TRUE);
-    return (result == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
-}
-
-int local_sdk_speaker_finish_buf_data() {
-    return LOCALSDK_OK;
-}
-
-int local_sdk_speaker_clean_buf_data() {
-    HI_MPI_AO_ClearChnBuf(g_aoDev, g_aoChn);
-    return LOCALSDK_OK;
-}
+/* Audio subsystem implementation moved to audio/audio.c (Phase 2 refactoring). */
+/* Speaker subsystem implementation moved to speaker/speaker.c (Phase 2 refactoring). */
 
 /* ============================================================================
    ALARM SUBSYSTEM
@@ -1373,7 +841,7 @@ int local_sdk_video_osd_update_timestamp(int chn, bool state, struct tm *timesta
 
     if (!params) return LOCALSDK_ERROR;
 
-    /* Glyph scale: base 3 (≈24px tall @1080p), adjusted by config size. */
+    /* Glyph scale: base 3 (â‰ˆ24px tall @1080p), adjusted by config size. */
     int scale = 3;
     if (params->opts.datetime_increase > 1) scale *= (int)params->opts.datetime_increase;
     if (params->opts.datetime_reduce   > 1) scale /= (int)params->opts.datetime_reduce;
@@ -1436,7 +904,7 @@ static inline void sdk_osd_px2bpp(uint8_t *base, uint32_t stride, uint32_t x,
 }
 
 /* Detection boxes use a full-frame 2bpp OVERLAY with a 2-entry colour LUT, like
-   the original firmware (1920x1080, PiFmt ARGB_2BPP, ~1 MB — vs ~8 MB for an
+   the original firmware (1920x1080, PiFmt ARGB_2BPP, ~1 MB â€” vs ~8 MB for an
    ARGB1555 canvas, which fails NOMEM next to the IVP). COVER_RGN was tried but
    is not supported on VENC (0xa0038008 NOT_SUPPORT). Outlines drawn with pixel
    value 1 -> ColorLUT; value 0 = transparent. */

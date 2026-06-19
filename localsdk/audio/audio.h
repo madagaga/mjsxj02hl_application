@@ -3,13 +3,12 @@
 
 #include <stdbool.h>
 
-// Is enabled
 bool audio_is_enabled(int channel);
+bool audio_init(void);
+bool audio_free(void);
 
-// Init audio
-bool audio_init();
-
-// Free audio
-bool audio_free();
+/* AO device/channel accessors for speaker.c */
+int audio_get_ao_dev(void);
+int audio_get_ao_chn(void);
 
 #endif

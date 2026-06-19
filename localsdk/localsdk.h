@@ -136,38 +136,7 @@ typedef struct {
     uint32_t g711_buffer_size; // G711 buffer size (320)
 } LOCALSDK_AUDIO_OPTIONS;
 
-// Init audio
-int local_sdk_audio_init();
-
-// Create audio
-int local_sdk_audio_create(int chn);
-
-// Set audio parameters
-int local_sdk_audio_set_parameters(int chn, LOCALSDK_AUDIO_OPTIONS *options);
-
-// Enable AEC
-int local_sdk_audio_set_aec_enable(int chn, bool state);
-
-// Set volume
-int local_sdk_audio_set_volume(int chn, int value);
-
-// Set audio encode callback
-int local_sdk_audio_set_encode_frame_callback(int chn, int (*callback)(LOCALSDK_AUDIO_G711_FRAME_INFO *frameInfo));
-
-// Start audio
-int local_sdk_audio_start();
-
-// Stop audio
-int local_sdk_audio_stop();
-
-// Run audio
-int local_sdk_audio_run();
-
-// End audio
-int local_sdk_audio_end();
-
-// Destory audio
-int local_sdk_audio_destory();
+/* Audio implementation lives in audio/audio.c (Phase 2 refactoring). */
 
 /********************
        SPEAKER
@@ -191,35 +160,7 @@ typedef struct {
     uint32_t reserved;         // Reserved/padding (1)
 } LOCALSDK_SPEAKER_OPTIONS;
 
-// Init speaker
-int local_sdk_speaker_init();
-
-// Set speaker parameters
-int local_sdk_speaker_set_parameters(LOCALSDK_SPEAKER_OPTIONS *options);
-
-// Set volume
-int local_sdk_speaker_set_volume(int value);
-
-// Enable mute
-int local_sdk_speaker_mute();
-
-// Disable mute
-int local_sdk_speaker_unmute();
-
-// Start speaker
-int local_sdk_speaker_start();
-
-// Feed PCM data
-int local_sdk_speaker_feed_pcm_data(void *data, int size);
-
-// Feed G711 data
-int local_sdk_speaker_feed_g711_data(void *data, int size);
-
-// Finish buffer
-int local_sdk_speaker_finish_buf_data();
-
-// Clean buffer
-int local_sdk_speaker_clean_buf_data();
+/* Speaker implementation lives in speaker/speaker.c (Phase 2 refactoring). */
 
 /********************
         ALARM
