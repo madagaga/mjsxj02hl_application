@@ -1,6 +1,8 @@
 #ifndef _PLATFORM_H_
 #define _PLATFORM_H_
 
+#include <stdbool.h>
+
 #include "hi_type.h"
 #include "hi_comm_vi.h"    /* VI_DEV / VI_PIPE / VI_CHN */
 #include "hi_comm_aio.h"   /* AUDIO_DEV */
@@ -78,6 +80,20 @@ void board_register_mode_change_cb(void (*cb)(HI_BOOL is_night));
 /* Force the board into a specific day/night mode immediately (bypasses luma
    detection). Used by night.c for forced-mode config (night.mode=0/1). */
 void board_set_mode(HI_BOOL is_night);
+
+/* Hardware platform init/deinit — called from init.c's all_init/all_free.
+   board_platform_init exports GPIOs, starts PWM/softlight, and launches the
+   button polling thread.  board_platform_deinit tears down VI, SYS/VB, ISP,
+   and cancels the button thread. */
+void board_platform_init(void);
+void board_platform_deinit(void);
+
+/* LED control — orange/blue indicator LEDs.  Called from mjsxj02hl.c. */
+void board_indicator_led(bool orange, bool blue);
+
+/* Button callback registration.  cb is called when the setup button is pressed.
+   timeout is ignored (kept for API parity with the old localsdk interface). */
+void board_set_button_callback(int timeout, int (*cb)(void));
 
 /* Active board header: provides BOARD_* sizing constants read by localsdk.
    Included last so the board can relay its sensor's #defines. Swap this (and

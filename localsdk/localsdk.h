@@ -9,9 +9,10 @@ extern "C"{
 #include <stdint.h>
 #include <time.h>
 
-/* Board sizing constants (single source of truth for the board+sensor couple).
-   Resolved at compile time; provides BOARD_TARGET_FPS used below. */
-#include "platform/board_mjsxj02hl.h"
+/* Board sizing constants + full platform API (board_indicator_led, etc.).
+   Pulling platform.h here gives all includers board_cfg_t, BOARD_* constants,
+   and the new board_platform_init/board_indicator_led declarations. */
+#include "platform/platform.h"
 
 /********************
        GENERAL
@@ -26,22 +27,6 @@ typedef struct {
     uint32_t width;
     uint32_t height;
 } LOCALSDK_PICTURE_SIZE;
-
-// Set printf function for debug messages
-int localsdk_set_logprintf_func(int (*function)(const char *, ...));
-
-// Set shell function
-// param: pointer to callback function: int (*callback)(const char *command)
-int localsdk_set_shellcall_func(int (*callback)(const char *));
-
-// Initialize SDK
-int localsdk_init();
-
-// Destory SDK
-int localsdk_destory();
-
-// Get SDK version
-int localsdk_get_version();
 
 /********************
         VIDEO
@@ -220,24 +205,12 @@ typedef struct {
 
 /* OSD implementation lives in osd/osd.c (Phase 4 refactoring). */
 
-/********************
-        LEDS
-********************/
+/* LED and button control live in platform/board_mjsxj02hl.c (Phase 6):
+     board_indicator_led(bool orange, bool blue)
+     board_set_button_callback(int timeout, int (*cb)(void))
+   Declared in platform/platform.h (included above). */
 
-int local_sdk_indicator_led_option(bool orange, bool blue);
-
-/********************
-       BUTTON
-********************/
-
-int local_sdk_setup_keydown_set_callback(int timeout, int (*callback)());
-
-/********************
-     NIGHT MODE
-********************/
-
-// Start auto luma polling thread (mode=2); board owns state machine
-int local_sdk_auto_night_light();
+/* Night mode implementation lives in night/night.c (Phase 5 refactoring). */
 
 #ifdef __cplusplus
 }

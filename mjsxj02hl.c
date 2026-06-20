@@ -28,11 +28,8 @@ void signal_callback(int signal) {
     
     // Enable orange LED
     if(APP_CFG.general.led) {
-        if(local_sdk_indicator_led_option(true, false) == LOCALSDK_OK) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_indicator_led_option(true, false)");
-        else {
-            LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "local_sdk_indicator_led_option(true, false)");
-            signal = EX_SOFTWARE;
-        }
+        board_indicator_led(true, false);
+        LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "board_indicator_led(true, false)");
     }
     
     // MQTT free
@@ -197,16 +194,16 @@ int main(int argc, char **argv) {
             
             // Onboard LED indicator
             if(APP_CFG.general.led) { // Enable blue LED
-                if(local_sdk_indicator_led_option(false, true) == LOCALSDK_OK) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_indicator_led_option(false, true)");
-                else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_indicator_led_option()");
+                board_indicator_led(false, true);
+                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "board_indicator_led(false, true)");
             } else { // Disable LEDs
-                if(local_sdk_indicator_led_option(false, false) == LOCALSDK_OK) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_indicator_led_option(false, false)");
-                else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_indicator_led_option()");
+                board_indicator_led(false, false);
+                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "board_indicator_led(false, false)");
             }
-            
+
             // Factory reset callback
-            if(local_sdk_setup_keydown_set_callback(3000, factory_reset_callback) == LOCALSDK_OK) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_setup_keydown_set_callback()");
-            else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_setup_keydown_set_callback()");
+            board_set_button_callback(3000, factory_reset_callback);
+            LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "board_set_button_callback()");
             
             // RTSP server
             if(rtsp_init()) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "rtsp_init()");

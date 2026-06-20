@@ -9,11 +9,18 @@
  *   - Day/night state machine (luma thresholds, hysteresis, transitions)
  */
 
+#include <stdbool.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <pthread.h>
 
 #include "platform.h"
+#include "mpi_vi.h"
+#include "mpi_sys.h"
+#include "mpi_vb.h"
 #include "../sensor/jxf/sensor_jxf22.h"
 #include "../scene/scene.h"
 #include "../../logger/logger.h"
@@ -53,6 +60,195 @@ static void board_gpio_write(int gpio, int value)
     FILE *f = fopen(path, "w");
     if (f) { fprintf(f, "%d", value); fclose(f); }
 }
+
+/* -------------------------------------------------------------------------
+ * GPIO boot-time setup helpers (export + direction + read)
+ * ---------------------------------------------------------------------- */
+
+static void gpio_export(int pin)
+{
+    FILE *f = fopen("/sys/class/gpio/export", "w");
+    if (f) { fprintf(f, "%d", pin); fclose(f); }
+    /* EBUSY = already exported; ignore */
+}
+
+static void gpio_set_direction(int pin, const char *dir)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", pin);
+    FILE *f = fopen(path, "w");
+    if (f) { fprintf(f, "%s", dir); fclose(f); }
+    printf("[gpio_init]dbg: gpio:%d  dir:%s  ok!\n", pin, dir);
+}
+
+static int gpio_read(int pin)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int v = 0;
+    fscanf(f, "%d", &v);
+    fclose(f);
+    return v;
+}
+
+static void gpio_init_pin(int pin, const char *dir, int init_value)
+{
+    gpio_export(pin);
+    gpio_set_direction(pin, dir);
+    if (strcmp(dir, "out") == 0) {
+        board_gpio_write(pin, init_value);
+        printf("[SDK-GPIO]dbg: Pin(%d)  Lvl(%d)  Dir(%s)\n", pin, init_value, dir);
+    } else {
+        printf("[SDK-GPIO]dbg: Pin(%d)  Lvl(%d)  Dir(%s)\n", pin, gpio_read(pin), dir);
+    }
+}
+
+static void gpio_all_init(const board_cfg_t *b)
+{
+    gpio_init_pin(b->gpio_ir_led_b,     "out", 0);
+    gpio_init_pin(b->gpio_ir_led_a,     "out", 1);
+    gpio_init_pin(b->gpio_ircut_b,      "out", 0);
+    gpio_init_pin(b->gpio_ircut_a,      "out", 0);
+    gpio_init_pin(b->gpio_led_orange,   "out", 0);
+    gpio_init_pin(b->gpio_led_blue,     "out", 1);
+    gpio_init_pin(b->gpio_button_setup, "in",  1);
+    gpio_init_pin(b->gpio_photo_sensor, "in",  0);
+}
+
+/* -------------------------------------------------------------------------
+ * PWM / softlight
+ * ---------------------------------------------------------------------- */
+
+#define PWM_DEV_PATH  "/dev/pwm"
+#define PWM_CMD_WRITE _IOW('p', 0x01, struct pwm_data_s)
+
+struct pwm_data_s {
+    unsigned int pwm_num;
+    unsigned int duty;
+    unsigned int period;
+    unsigned int enable;
+};
+
+static int g_pwmFd = -1;
+
+static void board_pwm_init(void)
+{
+    g_pwmFd = open(PWM_DEV_PATH, O_RDWR);
+    /* Not fatal if the PWM device is absent */
+}
+
+static void board_softlight_init(void)
+{
+    if (g_pwmFd >= 0) {
+        struct pwm_data_s d = { .pwm_num = 0, .duty = 0, .period = 256, .enable = 1 };
+        ioctl(g_pwmFd, PWM_CMD_WRITE, &d);
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * Button polling thread
+ * ---------------------------------------------------------------------- */
+
+static pthread_mutex_t g_keyMutex  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_t       g_keyThread = 0;
+static int           (*g_keyCb)(void) = NULL;
+static int             g_keyTimeout   = 0;
+
+static void *button_thread(void *arg)
+{
+    (void)arg;
+    const board_cfg_t *b = &g_board_mjsxj02hl;
+    printf("[SDK-THREAD]dbg: Platform Thread Start...\n");
+    int last_state = 1;
+    while (1) {
+        usleep(50000);
+        int v = gpio_read(b->gpio_button_setup);
+        if (v == 0 && last_state == 1) {
+            pthread_mutex_lock(&g_keyMutex);
+            if (g_keyCb) g_keyCb();
+            pthread_mutex_unlock(&g_keyMutex);
+        }
+        last_state = v;
+    }
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------
+ * Public platform API (declared in platform.h)
+ * ---------------------------------------------------------------------- */
+
+void board_platform_init(void)
+{
+    const board_cfg_t *b = &g_board_mjsxj02hl;
+
+    puts("----------------------------------------");
+    puts("    OPEN LOCALSDK (oss)        ('_)')");
+    puts("----------------------------------------");
+    puts("    platform: hi3518ev300 ");
+    printf("    board   : %s \n", b->name);
+    puts("    sdk ver : 14 ");
+    printf("    build   : %s (%s) \n", __DATE__, __TIME__);
+    puts("----------------------------------------");
+
+    pthread_mutex_init(&g_keyMutex, NULL);
+    board_pwm_init();
+    board_softlight_init();
+    gpio_all_init(b);
+
+    if (pthread_create(&g_keyThread, NULL, button_thread, NULL) != 0) {
+        g_keyThread = 0;
+        printf("[board_platform_init]err: Platform Thread Create Fail!\n");
+    } else {
+        printf("[SDK-THREAD]dbg: Platform Thread Create OK!  ('_)')\n");
+    }
+}
+
+void board_platform_deinit(void)
+{
+    /* Cancel button polling thread */
+    if (g_keyThread) {
+        pthread_cancel(g_keyThread);
+        pthread_join(g_keyThread, NULL);
+        g_keyThread = 0;
+    }
+    if (g_pwmFd >= 0) { close(g_pwmFd); g_pwmFd = -1; }
+
+    /* VI teardown */
+    const board_cfg_t *b = &g_board_mjsxj02hl;
+    VI_DEV dev = 0; VI_PIPE pipe = 0; VI_CHN chn = 0;
+    if (b->pfnGetVi) b->pfnGetVi(&dev, &pipe, &chn);
+    HI_MPI_VI_DisableChn(pipe, chn);
+    HI_MPI_VI_StopPipe(pipe);
+    HI_MPI_VI_DestroyPipe(pipe);
+    HI_MPI_VI_DisableDev(dev);
+    HI_MPI_SYS_Exit();
+    HI_MPI_VB_Exit();
+
+    /* Sensor ISP teardown */
+    if (b->pfnTeardownSensorIsp) b->pfnTeardownSensorIsp();
+}
+
+void board_indicator_led(bool orange, bool blue)
+{
+    const board_cfg_t *b = &g_board_mjsxj02hl;
+    board_gpio_write(b->gpio_led_orange, orange ? 1 : 0);
+    board_gpio_write(b->gpio_led_blue,   blue   ? 1 : 0);
+}
+
+void board_set_button_callback(int timeout, int (*cb)(void))
+{
+    printf("[SDK-THREAD]dbg: Set setup_keydown Callback Doing...\n");
+    pthread_mutex_lock(&g_keyMutex);
+    g_keyCb      = cb;
+    g_keyTimeout = timeout;
+    pthread_mutex_unlock(&g_keyMutex);
+}
+
+/* -------------------------------------------------------------------------
+ * (end of platform API block)
+ * ---------------------------------------------------------------------- */
 
 static void board_ircut_open(void)
 {
