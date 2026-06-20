@@ -218,17 +218,7 @@ typedef struct {
     } objects[LOCALSDK_ALARM_MAXIMUM_OBJECTS];
 } LOCALSDK_OSD_RECTANGLES;
 
-// Set osd parameters
-int local_sdk_video_osd_set_parameters(int chn, LOCALSDK_OSD_OPTIONS *options);
-
-// Display OEM logo (MI)
-int local_sdk_video_osd_update_logo(int chn, bool state);
-
-// Display date and time
-int local_sdk_video_osd_update_timestamp(int chn, bool state, struct tm *timestamp);
-
-// Display rectangles
-int local_sdk_video_osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECTANGLES *rectangles);
+/* OSD implementation lives in osd/osd.c (Phase 4 refactoring). */
 
 /********************
         LEDS
