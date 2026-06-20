@@ -185,35 +185,7 @@ typedef struct {
     } objects[LOCALSDK_ALARM_MAXIMUM_OBJECTS];
 } LOCALSDK_ALARM_EVENT_INFO;
 
-// Init alarm
-int local_sdk_alarm_init(int width, int height);
-
-// Set alarm sensitivity (1...255)
-int local_sdk_set_alarm_sensitivity(int type, int value);
-
-// Exit alarm
-int local_sdk_alarm_exit();
-
-// Set motor state
-int local_sdk_alarm_set_motor_state();
-
-// Set alarm algo module callback
-int local_sdk_alarm_algo_module_register_callback();
-
-// Unset alarm algo module callback
-int local_sdk_alarm_algo_module_unregister_callback();
-
-// Set alarm state callback
-int local_sdk_alarm_state_set_callback(int (*callback)(LOCALSDK_ALARM_EVENT_INFO *eventInfo));
-
-// Clear alarm state callback
-int local_sdk_alarm_state_clear_callback(int (*callback)(LOCALSDK_ALARM_EVENT_INFO *eventInfo));
-
-// Set alarm network state
-int local_sdk_set_alarm_network_state();
-
-// Set alarm switch
-int local_sdk_set_alarm_switch(int type, bool state);
+/* Alarm implementation lives in alarm/alarm.c (Phase 3 refactoring). */
 
 /********************
         OSD
