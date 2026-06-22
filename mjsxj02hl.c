@@ -14,7 +14,6 @@
 #include <sys/file.h>
 
 #include "./logger/logger.h"
-#include "./localsdk/localsdk.h"
 #include "./localsdk/init.h"
 #include "./localsdk/video/video.h"
 #include "./configs/configs.h"

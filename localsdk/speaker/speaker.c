@@ -8,8 +8,7 @@
 #include <unistd.h>
 
 #include "./speaker.h"
-#include "./../localsdk.h"
-#include "./../audio/audio.h"
+#include "./../audio/audio.h"      /* LOCALSDK_AUDIO_G711/PCM_BUFFER_SIZE */
 #include "./../../logger/logger.h"
 #include "./../../configs/configs.h"
 

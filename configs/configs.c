@@ -3,7 +3,8 @@
 
 #include "./configs.h"
 #include "./inih/ini.h"
-#include "./../localsdk/localsdk.h"
+#include "./../localsdk/video/video.h"    /* LOCALSDK_VIDEO_PAYLOAD_H264, LOCALSDK_VIDEO_RCMODE_* */
+#include "./../localsdk/speaker/speaker.h" /* LOCALSDK_SPEAKER_PCM_TYPE */
 #include "./../logger/logger.h"
 
 // Default values

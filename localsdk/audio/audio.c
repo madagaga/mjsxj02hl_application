@@ -12,7 +12,7 @@
 #include <sys/ioctl.h>
 
 #include "./audio.h"
-#include "./../localsdk.h"
+#include "./../video/video.h"      /* LOCALSDK_VIDEO_PRIMARY/SECONDARY_CHANNEL */
 #include "./../platform/platform.h"
 #include "./../../logger/logger.h"
 #include "./../../configs/configs.h"

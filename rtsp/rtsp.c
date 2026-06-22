@@ -8,7 +8,6 @@
 
 #include "./rtsp.h"
 #include "./libRtspServer.h"
-#include "./../localsdk/localsdk.h"
 #include "./../localsdk/video/video.h"
 #include "./../localsdk/audio/audio.h"
 #include "./../logger/logger.h"

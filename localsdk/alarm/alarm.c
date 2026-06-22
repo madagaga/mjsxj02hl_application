@@ -12,10 +12,8 @@
 #include <time.h>
 
 #include "./alarm.h"
-#include "./../localsdk.h"
 #include "./../platform/platform.h"
-#include "./../platform/board_mjsxj02hl.h"
-#include "./../video/video.h"
+#include "./../video/video.h"      /* LOCALSDK_VIDEO_SECONDARY_CHANNEL */
 #include "./../osd/osd.h"
 #include "./../../logger/logger.h"
 #include "./../../configs/configs.h"

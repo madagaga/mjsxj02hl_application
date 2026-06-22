@@ -7,7 +7,6 @@
 #include <unistd.h>
 
 #include "./night.h"
-#include "./../localsdk.h"
 #include "./../alarm/alarm.h"
 #include "./../platform/platform.h"
 #include "./../../logger/logger.h"

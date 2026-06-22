@@ -10,9 +10,8 @@
 #include <pthread.h>
 #include <time.h>
 
-#include "./osd.h"
-#include "./../localsdk.h"
-#include "./../platform/board_mjsxj02hl.h"
+#include "./osd.h"                 /* owns all LOCALSDK_OSD_* and LOCALSDK_ALARM_* types */
+#include "./../video/video.h"      /* LOCALSDK_VIDEO_PRIMARY_CHANNEL, BOARD_* constants */
 #include "./../../logger/logger.h"
 #include "./../../configs/configs.h"
 

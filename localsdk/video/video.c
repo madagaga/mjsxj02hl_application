@@ -35,8 +35,7 @@
 #include "hi_buffer.h"
 
 /* Internal */
-#include "video.h"
-#include "../localsdk.h"           /* types, constants (LOCALSDK_VIDEO_OPTIONS, etc.) */
+#include "video.h"                 /* owns all LOCALSDK_VIDEO_* types and constants */
 #include "../platform/platform.h"  /* board_cfg_t, BOARD_* constants */
 #include "../osd/osd.h"
 #include "../../logger/logger.h"

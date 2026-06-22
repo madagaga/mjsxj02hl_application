@@ -17,7 +17,6 @@
 #include "./paho.mqtt.c/src/MQTTClient.h"
 #include "./../logger/logger.h"
 #include "./../localsdk/init.h"
-#include "./../localsdk/localsdk.h"
 #include "./../localsdk/video/video.h"
 #include "./../localsdk/speaker/speaker.h"
 #include "./../configs/configs.h"
