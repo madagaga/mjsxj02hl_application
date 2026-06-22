@@ -62,10 +62,11 @@ static int32_t            g_mdInitialized = 0;
 
 /* ── High-level state ────────────────────────────────────────────────────── */
 
-static pthread_t timeout_thread;
-static int       alarm_time_motion    = 0;
-static int       alarm_time_humanoid  = 0;
-static bool      alarm_initialized    = false;
+static pthread_t    timeout_thread;
+static int          alarm_time_motion    = 0;
+static int          alarm_time_humanoid  = 0;
+static bool         alarm_initialized    = false;
+static volatile int g_alarmEnabled       = 1;
 
 /* ── Alarm callback pool helpers ─────────────────────────────────────────── */
 
@@ -319,8 +320,15 @@ static int32_t md_mpp_init(uint32_t width, uint32_t height)
         attr.enSadOutCtrl             = IVE_SAD_OUT_CTRL_THRESH;
         attr.u32Width                 = width;
         attr.u32Height                = height;
-        /* Higher sensitivity → lower threshold. motion_sens 1..255 → thr ~815..53 */
-        attr.u16SadThr                = (HI_U16)((256 - APP_CFG.alarm.motion_sens) * 3 + 50);
+        /* Original firmware formula (confirmed via trace: sens=1 → SadThr=549).
+           Inverse mapping: higher sensitivity → lower threshold → easier trigger.
+           Clamp input to [1,255]; result is always positive in that range (168..549). */
+        {
+            int32_t s = (int32_t)APP_CFG.alarm.motion_sens;
+            if (s < 1)   s = 1;
+            if (s > 255) s = 255;
+            attr.u16SadThr = (HI_U16)((-3 * s) / 2 + 550);
+        }
         attr.stCclCtrl.enMode         = IVE_CCL_MODE_4C;
         attr.stCclCtrl.u16InitAreaThr = 16;
         attr.stCclCtrl.u16Step        = 4;
@@ -496,8 +504,8 @@ static void *ivp_detect_thread(void *arg)
         ret = HI_MPI_VPSS_GetChnFrame(video_get_vpss_grp(), LOCALSDK_VIDEO_SECONDARY_CHANNEL,
                                       &frame, 1000);
         if (ret != HI_SUCCESS) { usleep(50000); continue; }
-        ivp_process_and_dispatch(&frame);
         if (g_mdInitialized) md_process_and_dispatch(&frame);
+        ivp_process_and_dispatch(&frame);
         HI_MPI_VPSS_ReleaseChnFrame(video_get_vpss_grp(), LOCALSDK_VIDEO_SECONDARY_CHANNEL, &frame);
     }
     LOGGER(LOGGER_LEVEL_DEBUG, "[alarm][ivp] detection thread stopped");
@@ -650,6 +658,8 @@ static void *alarm_state_timeout(void *args)
 
 static int alarm_state_callback(LOCALSDK_ALARM_EVENT_INFO *eventInfo)
 {
+    if (!g_alarmEnabled) return LOCALSDK_OK;
+
     int result = LOCALSDK_OK;
 
     if (eventInfo) {
@@ -681,9 +691,8 @@ bool alarm_switch(bool state)
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
 
     if (APP_CFG.alarm.enable) {
+        g_alarmEnabled = state ? 1 : 0;
         LOGGER(LOGGER_LEVEL_INFO, "Alarm %s", state ? "enabled" : "disabled");
-        /* IVP-based detection runs continuously once started; the alarm switch
-           only gates whether the application acts on events (timeout thread). */
     } else {
         LOGGER(LOGGER_LEVEL_INFO, "Alarm switch ignored, because alarms are disabled");
     }

@@ -104,7 +104,17 @@ static inline void osd_px2bpp(uint8_t *base, uint32_t stride,
 
 /* ── Region helpers ──────────────────────────────────────────────────────── */
 
-static int32_t osd_show_region(RGN_HANDLE handle, int chn, int x, int y, bool show)
+/* Layer assignments (higher = drawn on top):
+ *   5 = detection rectangles (2bpp full-frame)
+ *   6 = timestamp text
+ *   7 = logo
+ * Rects are at 5 so the timestamp remains visible on top of the box overlay. */
+#define OSD_LAYER_RECTS     5u
+#define OSD_LAYER_TIMESTAMP 6u
+#define OSD_LAYER_LOGO      7u
+
+static int32_t osd_show_region(RGN_HANDLE handle, int chn, int x, int y,
+                                uint32_t layer, bool show)
 {
     MPP_CHN_S      stChn;
     RGN_CHN_ATTR_S stChnAttr;
@@ -125,8 +135,7 @@ static int32_t osd_show_region(RGN_HANDLE handle, int chn, int x, int y, bool sh
             /* Hisilicon OVERLAY alpha range is [0,128] (128 = fully opaque). */
             stChnAttr.unChnAttr.stOverlayChn.u32BgAlpha = 0;
             stChnAttr.unChnAttr.stOverlayChn.u32FgAlpha = 128;
-            /* Distinct layer per handle to avoid ILLEGAL_PARAM on second attach. */
-            stChnAttr.unChnAttr.stOverlayChn.u32Layer = (HI_U32)(handle & 7);
+            stChnAttr.unChnAttr.stOverlayChn.u32Layer   = layer;
 
             result = HI_MPI_RGN_AttachToChn(handle, &stChn, &stChnAttr);
             if (result != HI_SUCCESS) {
@@ -187,7 +196,8 @@ static int osd_update_logo(int chn, bool state)
     }
     /* Logo region is intentionally empty (no proprietary MI asset embedded). */
     return osd_show_region(params->logo_hdl, chn,
-                           params->opts.oemlogo_x, params->opts.oemlogo_y, state);
+                           params->opts.oemlogo_x, params->opts.oemlogo_y,
+                           OSD_LAYER_LOGO, state);
 }
 
 static int osd_update_timestamp(int chn, bool state, struct tm *timestamp)
@@ -245,7 +255,8 @@ static int osd_update_timestamp(int chn, bool state, struct tm *timestamp)
     }
 
     return osd_show_region(params->timestamp_hdl, chn,
-                           params->opts.datetime_x, params->opts.datetime_y, state);
+                           params->opts.datetime_x, params->opts.datetime_y,
+                           OSD_LAYER_TIMESTAMP, state);
 }
 
 /* Detection boxes: full-frame 2bpp OVERLAY with a 2-entry colour LUT, matching
@@ -322,7 +333,7 @@ static int osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECTANGLES *r
         ca.unChnAttr.stOverlayChn.stPoint.s32Y = 0;
         ca.unChnAttr.stOverlayChn.u32FgAlpha   = 128;
         ca.unChnAttr.stOverlayChn.u32BgAlpha   = 0;
-        ca.unChnAttr.stOverlayChn.u32Layer     = 5;
+        ca.unChnAttr.stOverlayChn.u32Layer     = OSD_LAYER_RECTS;
         /* LUT values from original firmware /proc/umap/rgn. */
         ca.unChnAttr.stOverlayChn.u16ColorLUT[0] = 916;
         ca.unChnAttr.stOverlayChn.u16ColorLUT[1] = 31106;
