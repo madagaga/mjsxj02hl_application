@@ -21,6 +21,7 @@
 #include "./../../mqtt/mqtt.h"
 
 #include "hi_ivp.h"
+#include "ivs_md.h"
 #include "mpi_vpss.h"
 #include "mpi_sys.h"
 
@@ -47,6 +48,17 @@ static uint32_t     g_ivpResourceSize   = 0;
 static HI_VOID     *g_ivpResourceBuffer = NULL;
 static HI_U64       g_ivpPhysAddr       = 0;
 static int32_t      g_ivpInitialized    = 0;
+
+/* ── IVS MD (motion detection) globals ───────────────────────────────────── */
+
+#define MD_IMG_NUM  2
+#define MD_CHN_ID   0
+
+static IVE_SRC_IMAGE_S    g_mdImg[MD_IMG_NUM];
+static IVE_DST_MEM_INFO_S g_mdBlob;
+static int32_t            g_mdCurIdx      = 0;
+static HI_BOOL            g_mdFirstFrame  = HI_TRUE;
+static int32_t            g_mdInitialized = 0;
 
 /* ── High-level state ────────────────────────────────────────────────────── */
 
@@ -262,6 +274,168 @@ static void ivp_mpp_deinit(void)
     g_ivpInitialized = 0;
 }
 
+/* ── IVS MD (motion detection) ───────────────────────────────────────────── */
+
+static int32_t md_mpp_init(uint32_t width, uint32_t height)
+{
+    if (g_mdInitialized) return LOCALSDK_OK;
+
+    uint32_t stride = (width + 15u) & ~15u;
+    uint32_t size   = stride * height;
+
+    for (int i = 0; i < MD_IMG_NUM; i++) {
+        HI_U64   phys = 0;
+        HI_VOID *virt = NULL;
+        if (HI_MPI_SYS_MmzAlloc(&phys, &virt, "IVE_MD_IMG", NULL, size) != HI_SUCCESS) {
+            LOGGER(LOGGER_LEVEL_ERROR, "[alarm][md] MmzAlloc img[%d] failed", i);
+            goto fail;
+        }
+        memset(&g_mdImg[i], 0, sizeof(g_mdImg[i]));
+        g_mdImg[i].enType         = IVE_IMAGE_TYPE_U8C1;
+        g_mdImg[i].au64PhyAddr[0] = phys;
+        g_mdImg[i].au64VirAddr[0] = (HI_U64)(uintptr_t)virt;
+        g_mdImg[i].au32Stride[0]  = stride;
+        g_mdImg[i].u32Width       = width;
+        g_mdImg[i].u32Height      = height;
+    }
+
+    {
+        HI_U64   phys = 0;
+        HI_VOID *virt = NULL;
+        if (HI_MPI_SYS_MmzAlloc(&phys, &virt, "IVE_MD_BLOB", NULL, sizeof(IVE_CCBLOB_S)) != HI_SUCCESS) {
+            LOGGER(LOGGER_LEVEL_ERROR, "[alarm][md] MmzAlloc blob failed");
+            goto fail;
+        }
+        g_mdBlob.u64PhyAddr = phys;
+        g_mdBlob.u64VirAddr = (HI_U64)(uintptr_t)virt;
+        g_mdBlob.u32Size    = sizeof(IVE_CCBLOB_S);
+    }
+
+    {
+        MD_ATTR_S attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.enAlgMode                = MD_ALG_MODE_BG;
+        attr.enSadMode                = IVE_SAD_MODE_MB_4X4;
+        attr.enSadOutCtrl             = IVE_SAD_OUT_CTRL_THRESH;
+        attr.u32Width                 = width;
+        attr.u32Height                = height;
+        /* Higher sensitivity → lower threshold. motion_sens 1..255 → thr ~815..53 */
+        attr.u16SadThr                = (HI_U16)((256 - APP_CFG.alarm.motion_sens) * 3 + 50);
+        attr.stCclCtrl.enMode         = IVE_CCL_MODE_4C;
+        attr.stCclCtrl.u16InitAreaThr = 16;
+        attr.stCclCtrl.u16Step        = 4;
+        attr.stAddCtrl.u0q16X         = 32768;
+        attr.stAddCtrl.u0q16Y         = 32768;
+
+        if (HI_IVS_MD_Init() != HI_SUCCESS) {
+            LOGGER(LOGGER_LEVEL_ERROR, "[alarm][md] HI_IVS_MD_Init failed");
+            goto fail;
+        }
+        if (HI_IVS_MD_CreateChn(MD_CHN_ID, &attr) != HI_SUCCESS) {
+            LOGGER(LOGGER_LEVEL_ERROR, "[alarm][md] HI_IVS_MD_CreateChn failed");
+            HI_IVS_MD_Exit();
+            goto fail;
+        }
+        LOGGER(LOGGER_LEVEL_DEBUG, "[alarm][md] motion detection initialized (%ux%u thr=%u)",
+               width, height, attr.u16SadThr);
+    }
+
+    g_mdCurIdx      = 0;
+    g_mdFirstFrame  = HI_TRUE;
+    g_mdInitialized = 1;
+    return LOCALSDK_OK;
+
+fail:
+    for (int i = 0; i < MD_IMG_NUM; i++) {
+        if (g_mdImg[i].au64PhyAddr[0])
+            HI_MPI_SYS_MmzFree(g_mdImg[i].au64PhyAddr[0],
+                                (void *)(uintptr_t)g_mdImg[i].au64VirAddr[0]);
+    }
+    if (g_mdBlob.u64PhyAddr)
+        HI_MPI_SYS_MmzFree(g_mdBlob.u64PhyAddr, (void *)(uintptr_t)g_mdBlob.u64VirAddr);
+    memset(g_mdImg, 0, sizeof(g_mdImg));
+    memset(&g_mdBlob, 0, sizeof(g_mdBlob));
+    return LOCALSDK_ERROR;
+}
+
+static void md_mpp_deinit(void)
+{
+    if (!g_mdInitialized) return;
+    HI_IVS_MD_DestroyChn(MD_CHN_ID);
+    HI_IVS_MD_Exit();
+    for (int i = 0; i < MD_IMG_NUM; i++) {
+        if (g_mdImg[i].au64PhyAddr[0])
+            HI_MPI_SYS_MmzFree(g_mdImg[i].au64PhyAddr[0],
+                                (void *)(uintptr_t)g_mdImg[i].au64VirAddr[0]);
+    }
+    if (g_mdBlob.u64PhyAddr)
+        HI_MPI_SYS_MmzFree(g_mdBlob.u64PhyAddr, (void *)(uintptr_t)g_mdBlob.u64VirAddr);
+    memset(g_mdImg, 0, sizeof(g_mdImg));
+    memset(&g_mdBlob, 0, sizeof(g_mdBlob));
+    g_mdInitialized = 0;
+    LOGGER(LOGGER_LEVEL_DEBUG, "[alarm][md] motion detection deinitialized");
+}
+
+static void md_process_and_dispatch(VIDEO_FRAME_INFO_S *frame_info)
+{
+    VIDEO_FRAME_S *f   = &frame_info->stVFrame;
+    const uint8_t *src = (const uint8_t *)(uintptr_t)f->u64VirAddr[0];
+
+    if (!src) return;
+
+    /* Copy Y plane into current luma buffer */
+    uint8_t  *dst        = (uint8_t *)(uintptr_t)g_mdImg[g_mdCurIdx].au64VirAddr[0];
+    uint32_t  src_stride = f->u32Stride[0];
+    uint32_t  dst_stride = g_mdImg[g_mdCurIdx].au32Stride[0];
+    uint32_t  copy_w     = f->u32Width < g_mdImg[g_mdCurIdx].u32Width
+                           ? f->u32Width : g_mdImg[g_mdCurIdx].u32Width;
+    uint32_t  copy_h     = f->u32Height < g_mdImg[g_mdCurIdx].u32Height
+                           ? f->u32Height : g_mdImg[g_mdCurIdx].u32Height;
+    for (uint32_t y = 0; y < copy_h; y++)
+        memcpy(dst + y * dst_stride, src + y * src_stride, copy_w);
+
+    /* First frame: also fill reference buffer, skip processing */
+    if (g_mdFirstFrame) {
+        g_mdFirstFrame = HI_FALSE;
+        uint8_t *ref = (uint8_t *)(uintptr_t)g_mdImg[1 - g_mdCurIdx].au64VirAddr[0];
+        for (uint32_t y = 0; y < copy_h; y++)
+            memcpy(ref + y * dst_stride, src + y * src_stride, copy_w);
+        g_mdCurIdx = 1 - g_mdCurIdx;
+        return;
+    }
+
+    HI_S32 ret = HI_IVS_MD_Process(MD_CHN_ID,
+                                    &g_mdImg[g_mdCurIdx],
+                                    &g_mdImg[1 - g_mdCurIdx],
+                                    NULL, &g_mdBlob);
+    g_mdCurIdx = 1 - g_mdCurIdx;
+    if (ret != HI_SUCCESS) return;
+
+    IVE_CCBLOB_S *blob = (IVE_CCBLOB_S *)(uintptr_t)g_mdBlob.u64VirAddr;
+    if (blob->s8LabelStatus != 0) return;
+
+    const uint32_t sx = BOARD_WIDTH  / BOARD_SUB_WIDTH;
+    const uint32_t sy = BOARD_HEIGHT / BOARD_SUB_HEIGHT;
+
+    LOCALSDK_ALARM_EVENT_INFO ev;
+    memset(&ev, 0, sizeof(ev));
+    int n = 0;
+    for (int i = 0; i < IVE_MAX_REGION_NUM && n < LOCALSDK_ALARM_MAXIMUM_OBJECTS; i++) {
+        IVE_REGION_S *r = &blob->astRegion[i];
+        if (r->u32Area == 0) continue;
+        ev.objects[n].type   = LOCALSDK_ALARM_TYPE_MOTION;
+        ev.objects[n].state  = 1;
+        ev.objects[n].x      = (uint32_t)r->u16Left   * sx;
+        ev.objects[n].y      = (uint32_t)r->u16Top    * sy;
+        ev.objects[n].width  = (uint32_t)(r->u16Right  - r->u16Left) * sx;
+        ev.objects[n].height = (uint32_t)(r->u16Bottom - r->u16Top)  * sy;
+        n++;
+    }
+    ev.type  = LOCALSDK_ALARM_TYPE_MOTION;
+    ev.state = (n > 0) ? 1 : 0;
+    alarm_run_callbacks(&ev);
+}
+
 /* ── IVP detection thread ─────────────────────────────────────────────────── */
 
 #define IVP_OBJ_CAPACITY 16
@@ -323,6 +497,7 @@ static void *ivp_detect_thread(void *arg)
                                       &frame, 1000);
         if (ret != HI_SUCCESS) { usleep(50000); continue; }
         ivp_process_and_dispatch(&frame);
+        if (g_mdInitialized) md_process_and_dispatch(&frame);
         HI_MPI_VPSS_ReleaseChnFrame(video_get_vpss_grp(), LOCALSDK_VIDEO_SECONDARY_CHANNEL, &frame);
     }
     LOGGER(LOGGER_LEVEL_DEBUG, "[alarm][ivp] detection thread stopped");
@@ -526,10 +701,16 @@ bool alarm_init(void)
         /* Start IVP humanoid detector on the 640x360 secondary stream */
         if (result &= (ivp_mpp_init(BOARD_SUB_WIDTH, BOARD_SUB_HEIGHT, NULL) == LOCALSDK_OK)) {
             LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "ivp_mpp_init()");
-            if (result &= (ivp_detect_start() == LOCALSDK_OK)) {
-                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "ivp_detect_start()");
-            } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "ivp_detect_start()");
         } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "ivp_mpp_init()");
+
+        /* Start IVS MD motion detector (same stream, same thread) */
+        if (md_mpp_init(BOARD_SUB_WIDTH, BOARD_SUB_HEIGHT) == LOCALSDK_OK) {
+            LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "md_mpp_init()");
+        } else LOGGER(LOGGER_LEVEL_WARNING, "%s error! (motion detection unavailable)", "md_mpp_init()");
+
+        if (result &= (ivp_detect_start() == LOCALSDK_OK)) {
+            LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "ivp_detect_start()");
+        } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "ivp_detect_start()");
 
         /* Register our event dispatch callback */
         if (result &= (alarm_register_callback(alarm_state_callback) == LOCALSDK_OK)) {
@@ -581,6 +762,9 @@ bool alarm_free(void)
     /* Stop IVP detection and deinit */
     ivp_detect_stop();
     LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "ivp_detect_stop()");
+
+    md_mpp_deinit();
+    LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "md_mpp_deinit()");
 
     ivp_mpp_deinit();
     LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "ivp_mpp_deinit()");
