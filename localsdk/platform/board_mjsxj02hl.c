@@ -335,11 +335,22 @@ static HI_S32 mjsxj02hl_init(void)
 {
     const board_cfg_t *b = &g_board_mjsxj02hl;
 
-    /* GPIO initial state: day (IR LED off, IR-cut motor relaxed) */
+    /* GPIO initial state: IR LED off, IR-cut motor relaxed (A=0, B=0). */
     board_gpio_write(b->gpio_ir_led_a, 0);
     if (b->gpio_ir_led_b >= 0) board_gpio_write(b->gpio_ir_led_b, 0);
     board_gpio_write(b->gpio_ircut_a, 0);
     board_gpio_write(b->gpio_ircut_b, 0);
+
+    /* Bistable IR-cut: physical filter position is unknown at power-on.
+     * board_ircut_close() derives its day-direction pulse from A transitioning
+     * 1→0, which requires GPIOs at (1,1) beforehand.  From the boot (0,0) state
+     * that pulse is absent.  Drive it explicitly: A=0 already, raise B for
+     * step_us — A=0,B=1 is the vector that seats the filter in day position —
+     * then release.  Matches the original firmware "click at boot". */
+    board_gpio_write(b->gpio_ircut_b, 1);
+    usleep((unsigned)b->gpio_ircut_step_us);
+    board_gpio_write(b->gpio_ircut_b, 0);
+    LOGGER(LOGGER_LEVEL_INFO, "[board][mjsxj02hl] init: IR-cut boot pulse → day (filter in)");
 
     HI_S32 ret = scene_init(MJSXJ02HL_SCENE_DAY, MJSXJ02HL_SCENE_NIGHT, BOARD_TARGET_FPS);
     if (ret != 0) {
