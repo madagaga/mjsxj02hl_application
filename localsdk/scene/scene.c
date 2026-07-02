@@ -18,6 +18,8 @@
  *   [static_ca]        — chromatic aberration enable flag
  *   [static_drc]       — dynamic range compression (gated by [module_state])
  *   [static_sharpen]   — edge/texture sharpening, per-ISO tables (gated)
+ *   [static_ldci]      — local dynamic contrast improvement, per-ISO auto tables
+ *   [static_dpc]       — dynamic defect-pixel correction, per-ISO auto tables
  *   [dynamic_linear_drc] — per-ISO DRC strength, re-applied at runtime by a thread
  *   [module_state]     — per-module flags (bStaticDRC/bStaticSharpen/bDynamicLinearDrc)
  */
@@ -131,6 +133,24 @@ typedef struct {
     HI_U8   shp_ggain[ISP_AUTO_ISO_STRENGTH_NUM];
     HI_U8   shp_skin_gain[ISP_AUTO_ISO_STRENGTH_NUM];
     HI_U16  shp_max_sharp_gain[ISP_AUTO_ISO_STRENGTH_NUM];
+
+    /* [static_ldci] — local dynamic contrast improvement (per-ISO auto) */
+    HI_BOOL ldci_present;
+    HI_BOOL ldci_enable;
+    HI_U8   ldci_gauss_sigma;
+    HI_U8   ldci_pos_wgt[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   ldci_pos_sigma[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   ldci_pos_mean[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   ldci_neg_wgt[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   ldci_neg_sigma[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   ldci_neg_mean[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  ldci_blc_ctrl[ISP_AUTO_ISO_STRENGTH_NUM];
+
+    /* [static_dpc] — dynamic defect-pixel correction (per-ISO auto) */
+    HI_BOOL dpc_present;
+    HI_BOOL dpc_enable;
+    HI_U16  dpc_strength[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  dpc_blend_ratio[ISP_AUTO_ISO_STRENGTH_NUM];
 } scene_params_t;
 
 static scene_params_t g_day;
@@ -370,6 +390,36 @@ static int scene_handler(void *user, const char *section,
             parse_u32_arr(v, p->dld_iso_level, ISP_AUTO_ISO_STRENGTH_NUM);
         else if (strcasecmp(name, "Strength") == 0)
             parse_u16_arr(v, p->dld_strength, ISP_AUTO_ISO_STRENGTH_NUM);
+
+    } else if (strcasecmp(section, "static_ldci") == 0) {
+        p->ldci_present = HI_TRUE;
+        if      (strcasecmp(name, "Enable") == 0)
+            p->ldci_enable      = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "LDCIGaussLPFSigma") == 0)
+            p->ldci_gauss_sigma = (HI_U8)atoi(v);
+        else if (strcasecmp(name, "AutoHePosWgt") == 0)
+            parse_u8_arr(v, p->ldci_pos_wgt,   ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "AutoHePosSigma") == 0)
+            parse_u8_arr(v, p->ldci_pos_sigma, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "AutoHePosMean") == 0)
+            parse_u8_arr(v, p->ldci_pos_mean,  ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "AutoHeNegWgt") == 0)
+            parse_u8_arr(v, p->ldci_neg_wgt,   ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "AutoHeNegSigma") == 0)
+            parse_u8_arr(v, p->ldci_neg_sigma, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "AutoHeNegMean") == 0)
+            parse_u8_arr(v, p->ldci_neg_mean,  ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "AutoBlcCtrl") == 0)
+            parse_u16_arr(v, p->ldci_blc_ctrl, ISP_AUTO_ISO_STRENGTH_NUM);
+
+    } else if (strcasecmp(section, "static_dpc") == 0) {
+        p->dpc_present = HI_TRUE;
+        if      (strcasecmp(name, "DpcEnable") == 0)
+            p->dpc_enable = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "Strength") == 0)
+            parse_u16_arr(v, p->dpc_strength,    ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "BlendRatio") == 0)
+            parse_u16_arr(v, p->dpc_blend_ratio, ISP_AUTO_ISO_STRENGTH_NUM);
     }
 
     return 1;
@@ -682,6 +732,78 @@ static void apply_sharpen(const scene_params_t *p)
                attr.stAuto.au16EdgeStr[0][0], attr.stAuto.au16MaxSharpGain[0]);
 }
 
+/* Local dynamic contrast improvement — faithful to HI_SCENE_SetStaticLDCI:
+   Get→fill the per-ISO auto tables (7 arrays × 16 ISO nodes)→Set.
+   enOpType kept at OP_TYPE_AUTO (LDCIOpType=0 in the INI). */
+static void apply_ldci(const scene_params_t *p)
+{
+    if (!p->ldci_present)
+        return;
+
+    ISP_LDCI_ATTR_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetLDCIAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetLDCIAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
+
+    attr.bEnable         = p->ldci_enable;
+    attr.u8GaussLPFSigma = p->ldci_gauss_sigma;
+    attr.enOpType        = OP_TYPE_AUTO;
+
+    for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
+        attr.stAuto.astHeWgt[i].stHePosWgt.u8Wgt   = p->ldci_pos_wgt[i];
+        attr.stAuto.astHeWgt[i].stHePosWgt.u8Sigma = p->ldci_pos_sigma[i];
+        attr.stAuto.astHeWgt[i].stHePosWgt.u8Mean  = p->ldci_pos_mean[i];
+        attr.stAuto.astHeWgt[i].stHeNegWgt.u8Wgt   = p->ldci_neg_wgt[i];
+        attr.stAuto.astHeWgt[i].stHeNegWgt.u8Sigma = p->ldci_neg_sigma[i];
+        attr.stAuto.astHeWgt[i].stHeNegWgt.u8Mean  = p->ldci_neg_mean[i];
+        attr.stAuto.au16BlcCtrl[i]                  = p->ldci_blc_ctrl[i];
+    }
+
+    ret = HI_MPI_ISP_SetLDCIAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetLDCIAttr failed 0x%x", (unsigned)ret);
+    else
+        LOGGER(LOGGER_LEVEL_INFO,
+               "[scene] LDCI en=%d sigma=%u posWgt[4]=%u blcCtrl[4]=%u",
+               (int)attr.bEnable, attr.u8GaussLPFSigma,
+               attr.stAuto.astHeWgt[4].stHePosWgt.u8Wgt,
+               attr.stAuto.au16BlcCtrl[4]);
+}
+
+/* Dynamic defect-pixel correction — faithful to HI_SCENE_SetStaticDPC:
+   Get→fill per-ISO auto Strength and BlendRatio arrays→Set (OP_TYPE_AUTO). */
+static void apply_dpc(const scene_params_t *p)
+{
+    if (!p->dpc_present)
+        return;
+
+    ISP_DP_DYNAMIC_ATTR_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetDPDynamicAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetDPDynamicAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
+
+    attr.bEnable  = p->dpc_enable;
+    attr.enOpType = OP_TYPE_AUTO;
+
+    for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
+        attr.stAuto.au16Strength[i]   = p->dpc_strength[i];
+        attr.stAuto.au16BlendRatio[i] = p->dpc_blend_ratio[i];
+    }
+
+    ret = HI_MPI_ISP_SetDPDynamicAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetDPDynamicAttr failed 0x%x", (unsigned)ret);
+    else
+        LOGGER(LOGGER_LEVEL_INFO,
+               "[scene] DPC en=%d strength[8]=%u blendRatio[10]=%u",
+               (int)attr.bEnable,
+               attr.stAuto.au16Strength[8], attr.stAuto.au16BlendRatio[10]);
+}
+
 /* Dynamic linear DRC — the original modulates the DRC strength per-ISO at
    runtime ([dynamic_linear_drc]); without it our fixed static strength (512)
    over-brightens in daylight (low ISO), washing the image and degrading IVP
@@ -747,6 +869,8 @@ static void apply_scene(const scene_params_t *p)
     apply_saturation(p);
     apply_nr(p);
     apply_ca(p);
+    apply_ldci(p);
+    apply_dpc(p);
     apply_drc(p);
     apply_sharpen(p);
 }
