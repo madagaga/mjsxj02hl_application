@@ -85,7 +85,7 @@ static void audio_codec_cfg(void)
     ACODEC_MIXER_E input_mode = ACODEC_MIXER_IN1;
     ioctl(fd, ACODEC_SET_MIXER_MIC, &input_mode);
 
-    int vol = 60;
+    int vol = APP_CFG.audio.volume;
     ioctl(fd, ACODEC_SET_INPUT_VOL, &vol);
 
     close(fd);

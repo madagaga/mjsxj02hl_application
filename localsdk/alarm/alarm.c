@@ -220,6 +220,19 @@ static int32_t ivp_load_resource(const char *oms_file)
         return LOCALSDK_ERROR;
     }
 
+    {
+        int32_t s = (int32_t)APP_CFG.alarm.humanoid_sens;
+        if (s < 1)   s = 1;
+        if (s > 255) s = 255;
+        hi_ivp_ctrl_attr ctrl_attr;
+        ctrl_attr.threshold = (hi_float)(256 - s) / 256.0f;
+        if (hi_ivp_set_ctrl_attr(g_ivpHandle, &ctrl_attr) == HI_SUCCESS)
+            LOGGER(LOGGER_LEVEL_DEBUG, "[alarm][ivp] threshold=%.3f (humanoid_sens=%d)",
+                   ctrl_attr.threshold, s);
+        else
+            LOGGER(LOGGER_LEVEL_WARNING, "[alarm][ivp] hi_ivp_set_ctrl_attr failed (non-fatal)");
+    }
+
     g_ivpResourceSize   = file_size;
     g_ivpResourceBuffer = virt_addr;
     g_ivpPhysAddr       = phys_addr;

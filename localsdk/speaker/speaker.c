@@ -125,6 +125,7 @@ bool speaker_init(void)
         LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "speaker_mpp_init()");
         if (result &= (speaker_mpp_start() == LOCALSDK_OK)) {
             LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "speaker_mpp_start()");
+            speaker_set_volume(APP_CFG.speaker.volume);
         } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "speaker_mpp_start()");
     } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "speaker_mpp_init()");
 
