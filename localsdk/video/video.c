@@ -320,6 +320,56 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn,
    VIDEO INIT / CREATE / START / STOP
    ============================================================================ */
 
+/* Best-effort teardown of any MPP state left by a previous run (crash or
+ * SIGKILL).  SYS_Exit/VB_Exit alone are not sufficient: if VENC, VPSS, VI or
+ * ISP are still active in the kernel drivers, SYS_Exit fails silently and
+ * VB stays initialized → VB_SetConfig returns BUSY.  Tear everything down in
+ * reverse order first; all errors are intentionally ignored. */
+static void video_force_cleanup(void) {
+    VENC_CHN c;
+    MPP_CHN_S src, dst;
+    VI_DEV viDev = 0; VI_PIPE viPipe = 0; VI_CHN viChn = 0;
+
+    /* VENC: stop + destroy channels 0-3 */
+    for (c = 0; c < 4; c++) {
+        HI_MPI_VENC_StopRecvFrame(c);
+        HI_MPI_VENC_DestroyChn(c);
+    }
+
+    /* VPSS→VENC unbind (our two encode channels) */
+    memset(&src, 0, sizeof(src)); memset(&dst, 0, sizeof(dst));
+    src.enModId = HI_ID_VPSS; src.s32DevId = g_vpssGrp;
+    dst.enModId = HI_ID_VENC; dst.s32DevId = 0;
+    for (c = 0; c < 2; c++) {
+        src.s32ChnId = g_vpssChn[c]; dst.s32ChnId = g_vencChn[c];
+        HI_MPI_SYS_UnBind(&src, &dst);
+    }
+
+    /* VPSS stop + destroy */
+    HI_MPI_VPSS_StopGrp(g_vpssGrp);
+    HI_MPI_VPSS_DestroyGrp(g_vpssGrp);
+
+    /* VI→VPSS unbind + VI pipeline teardown */
+    if (g_board_cfg && g_board_cfg->pfnGetVi) {
+        g_board_cfg->pfnGetVi(&viDev, &viPipe, &viChn);
+        memset(&src, 0, sizeof(src)); memset(&dst, 0, sizeof(dst));
+        src.enModId = HI_ID_VI;   src.s32DevId = viPipe; src.s32ChnId = viChn;
+        dst.enModId = HI_ID_VPSS; dst.s32DevId = g_vpssGrp; dst.s32ChnId = 0;
+        HI_MPI_SYS_UnBind(&src, &dst);
+        HI_MPI_VI_DisableChn(viPipe, viChn);
+        HI_MPI_VI_StopPipe(viPipe);
+        HI_MPI_VI_DestroyPipe(viPipe);
+        HI_MPI_VI_DisableDev(viDev);
+    }
+
+    /* ISP teardown (thread join + sensor unregister) */
+    if (g_board_cfg && g_board_cfg->pfnTeardownSensorIsp)
+        g_board_cfg->pfnTeardownSensorIsp();
+
+    HI_MPI_SYS_Exit();
+    HI_MPI_VB_Exit();
+}
+
 static int video_sys_init(void) {
     VB_CONFIG_S stVbConf;
     VI_VPSS_MODE_S stVIVPSSMode;
@@ -349,8 +399,7 @@ static int video_sys_init(void) {
     stVbConf.astCommPool[1].u64BlkSize = sdk_calc_yuv420_blk_size(BOARD_SUB_WIDTH, BOARD_SUB_HEIGHT);
     stVbConf.astCommPool[1].u32BlkCnt  = g_board_cfg->vb_sub_blk_cnt;
 
-    HI_MPI_SYS_Exit();
-    HI_MPI_VB_Exit();
+    video_force_cleanup();
 
     result = HI_MPI_VB_SetConfig(&stVbConf);
     if (result != HI_SUCCESS) {
