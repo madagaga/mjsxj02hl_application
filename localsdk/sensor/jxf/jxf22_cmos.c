@@ -66,7 +66,7 @@ static HI_S32 cmos_get_ae_default(VI_PIPE ViPipe, AE_SENSOR_DEFAULT_S *pstAeSnsD
 
     pstAeSnsDft->u32ISPDgainShift      = 8;
     pstAeSnsDft->u32MinISPDgainTarget  = 1 << pstAeSnsDft->u32ISPDgainShift;
-    pstAeSnsDft->u32MaxISPDgainTarget  = 4 << pstAeSnsDft->u32ISPDgainShift;
+    pstAeSnsDft->u32MaxISPDgainTarget  = 8 << pstAeSnsDft->u32ISPDgainShift; /* original=8192 (8×) vs default 4× */
 
     pstAeSnsDft->enMaxIrisFNO = ISP_IRIS_F_NO_1_0;
     pstAeSnsDft->enMinIrisFNO = ISP_IRIS_F_NO_32_0;
@@ -87,7 +87,7 @@ static HI_S32 cmos_get_ae_default(VI_PIPE ViPipe, AE_SENSOR_DEFAULT_S *pstAeSnsD
     gu32FullLinesStd = VMAX_1080P30_LINEAR;
     pstAeSnsDft->u32MaxIntTime       = gu32FullLinesStd - 4;
     pstAeSnsDft->u32MinIntTime       = 2;
-    pstAeSnsDft->u32MaxIntTimeTarget = 65535;
+    pstAeSnsDft->u32MaxIntTimeTarget = gu32FullLinesStd - 2; /* cap at ~1 frame; original=VMAX-2 */
     pstAeSnsDft->u32MinIntTimeTarget = 2;
     pstAeSnsDft->u32MaxAgain         = 15872; /* 15.5× */
     pstAeSnsDft->u32MinAgain         = 1024;
@@ -119,10 +119,11 @@ static HI_VOID cmos_fps_set(VI_PIPE ViPipe, HI_FLOAT f32Fps,
     g_stSnsRegsInfo.astI2cData[SNS_REG_VMAX_L].u32Data = gu32FullLinesStd & 0xff;
     g_stSnsRegsInfo.astI2cData[SNS_REG_VMAX_H].u32Data = (gu32FullLinesStd >> 8) & 0xff;
 
-    pstAeSnsDft->f32Fps           = f32Fps;
-    pstAeSnsDft->u32LinesPer500ms = (HI_U32)(gu32FullLinesStd * f32Fps / 2.0f);
-    pstAeSnsDft->u32MaxIntTime    = gu32FullLinesStd - 4;
-    pstAeSnsDft->u32FullLinesStd  = gu32FullLinesStd;
+    pstAeSnsDft->f32Fps              = f32Fps;
+    pstAeSnsDft->u32LinesPer500ms    = (HI_U32)(gu32FullLinesStd * f32Fps / 2.0f);
+    pstAeSnsDft->u32MaxIntTime       = gu32FullLinesStd - 4;
+    pstAeSnsDft->u32MaxIntTimeTarget = gu32FullLinesStd - 2;
+    pstAeSnsDft->u32FullLinesStd     = gu32FullLinesStd;
     gu32FullLines = gu32FullLinesStd;
     pstAeSnsDft->u32FullLines     = gu32FullLines;
 }
