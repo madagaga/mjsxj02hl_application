@@ -432,10 +432,10 @@ const board_cfg_t g_board_mjsxj02hl = {
     .ai_dev = 0,
     .ao_dev = 0,
 
-    .vb_main_blk_cnt     = 2,
+    .vb_main_blk_cnt     = 1,
     .vb_sub_blk_cnt      = 5,
     /* 416 lines: original firmware value (inner_GetWrapBufLine_By_SnsType).
-       VB block ≈1.17 MB × 2; saves ~1.8 MB vs full-frame.
+       VB block ≈1.17 MB × 1; saves ~1.8 MB vs full-frame (vs cnt=2).
        Requires VI_ONLINE_VPSS_ONLINE. */
     .vb_main_wrap_lines  = 416,
 
