@@ -62,6 +62,7 @@ typedef struct {
     HI_U32  ae_route_again[ISP_AE_ROUTE_EX_MAX_NODES];
     HI_U32  ae_route_dgain[ISP_AE_ROUTE_EX_MAX_NODES];
     HI_U32  ae_route_isp_dgain[ISP_AE_ROUTE_EX_MAX_NODES];
+    HI_U8   ae_compensation;  /* AutoCompesation steady-state value; 0 = keep ISP default */
 
     /* [static_awb] — white-balance calibration */
     HI_BOOL awb_present;
@@ -255,6 +256,15 @@ static int scene_handler(void *user, const char *section,
             parse_u32_arr(v, p->ae_route_dgain,    ISP_AE_ROUTE_EX_MAX_NODES);
         else if (strcasecmp(name, "RouteEXISPDGain") == 0)
             parse_u32_arr(v, p->ae_route_isp_dgain, ISP_AE_ROUTE_EX_MAX_NODES);
+        else if (strcasecmp(name, "AutoCompesation") == 0) {
+            /* Per-segment AE luma target compensation (INI typo: "Compesation").
+             * The ISP exposes a single scalar u8Compensation; the vendor uses the
+             * steady-state (last) value — e.g. "82,82,80,80,80,80" → 80. */
+            HI_U8 arr[8];
+            int n = parse_u8_arr(v, arr, 8);
+            if (n > 0)
+                p->ae_compensation = arr[n - 1];
+        }
 
     } else if (strcasecmp(section, "static_awb") == 0) {
         p->awb_present = HI_TRUE;
@@ -449,12 +459,14 @@ static void apply_ae(const scene_params_t *p)
     attr.stAuto.u8Tolerance                      = p->ae_tolerance;
     attr.stAuto.stAEDelayAttr.u16BlackDelayFrame = p->ae_black_delay;
     attr.stAuto.stAEDelayAttr.u16WhiteDelayFrame = p->ae_white_delay;
+    if (p->ae_compensation > 0)                  /* brighter luma target (INI AutoCompesation) */
+        attr.stAuto.u8Compensation               = p->ae_compensation;
 
     ret = HI_MPI_ISP_SetExposureAttr(0, &attr);
     LOGGER(LOGGER_LEVEL_DEBUG,
-           "[scene] SetExposureAttr fps=%u max_int=%u sys_gain_max=%u speed=%u tol=%u ret=0x%x",
+           "[scene] SetExposureAttr fps=%u max_int=%u sys_gain_max=%u speed=%u tol=%u comp=%u ret=0x%x",
            g_target_fps, max_int_time, p->ae_sys_gain_max, p->ae_speed, p->ae_tolerance,
-           (unsigned)ret);
+           p->ae_compensation, (unsigned)ret);
 
     if (p->ae_route_ex_valid && p->ae_route_node_num > 0) {
         ISP_AE_ROUTE_EX_S route;
