@@ -355,10 +355,6 @@ static HI_S32 cmos_get_isp_default(VI_PIPE ViPipe, ISP_CMOS_DEFAULT_S *pstDef)
 
     memset(pstDef, 0, sizeof(ISP_CMOS_DEFAULT_S));
 
-    pstDef->unKey.bit1Gamma    = 1;
-    pstDef->unKey.bit1Demosaic = 1;
-    pstDef->unKey.bit1BayerNr  = 1;
-
     pstDef->pstGamma    = &g_stIspGamma;
     pstDef->pstDemosaic = &g_stIspDemosaic;
     pstDef->pstBayerNr  = &g_stIspBayerNr;
