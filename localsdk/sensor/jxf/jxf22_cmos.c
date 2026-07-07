@@ -312,6 +312,17 @@ static ISP_CMOS_GAMMA_S g_stIspGamma = {
     },
 };
 
+/* Demosaic tuning — values extracted from original libsns_f22.so via /proc/umap/isp dump.
+   NoDirHFStr=3 (vs ISP default 0) restores high-frequency detail in demosaicing.
+   DetailSmoothRange=1 (vs ISP default 2) reduces blurring at detail boundaries. */
+static ISP_CMOS_DEMOSAIC_S g_stIspDemosaic = {
+    .bEnable                  = HI_TRUE,
+    .au8NonDirStr             = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    .au8NonDirMFDetailEhcStr  = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    .au8NonDirHFDetailEhcStr  = {3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3},
+    .au8DetailSmoothRange     = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+};
+
 /* BayerNR tuning (noise reduction per ISO level, 16 entries). */
 static ISP_CMOS_BAYERNR_S g_stIspBayerNr = {
     .bEnable           = HI_TRUE,
@@ -329,10 +340,10 @@ static ISP_CMOS_BAYERNR_S g_stIspBayerNr = {
     .au8WDRFrameStr    = {16, 16, 16, 16},
     .au8FusionFrameStr = {16, 16, 16, 16},
     .au16CoarseStr     = {
-        {256,256,256,256,256,256,256,256,256,256,384,384,384,384,512,512},
-        {256,256,256,256,256,256,256,256,256,256,384,384,384,384,512,512},
-        {256,256,256,256,256,256,256,256,256,256,384,384,384,384,512,512},
-        {256,256,256,256,256,256,256,256,256,256,384,384,384,384,512,512},
+        {192,192,192,192,192,192,192,192,192,192,288,288,288,288,384,384},
+        {192,192,192,192,192,192,192,192,192,192,288,288,288,288,384,384},
+        {192,192,192,192,192,192,192,192,192,192,288,288,288,288,384,384},
+        {192,192,192,192,192,192,192,192,192,192,288,288,288,288,384,384},
     },
     .au16LutCoringWgt  = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
 };
@@ -344,8 +355,9 @@ static HI_S32 cmos_get_isp_default(VI_PIPE ViPipe, ISP_CMOS_DEFAULT_S *pstDef)
 
     memset(pstDef, 0, sizeof(ISP_CMOS_DEFAULT_S));
 
-    pstDef->pstGamma   = &g_stIspGamma;
-    pstDef->pstBayerNr = &g_stIspBayerNr;
+    pstDef->pstGamma    = &g_stIspGamma;
+    pstDef->pstDemosaic = &g_stIspDemosaic;
+    pstDef->pstBayerNr  = &g_stIspBayerNr;
 
     /* Sensor resolution for ISP */
     pstDef->stSensorMaxResolution.u32MaxWidth  = 1920;
