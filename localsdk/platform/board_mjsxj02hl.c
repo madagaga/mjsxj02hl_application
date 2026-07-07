@@ -364,18 +364,30 @@ static HI_S32 mjsxj02hl_init(void)
 
 static void mjsxj02hl_on_luma(HI_U8 luma)
 {
+    const board_cfg_t *b = &g_board_mjsxj02hl;
+
     if (s_settling > 0) {
         s_settling--;
         return;
     }
 
-    LOGGER(LOGGER_LEVEL_DEBUG, "[board][mjsxj02hl] luma=%u mode=%s consec_n=%d consec_d=%d",
-           luma, s_current_mode ? "day" : "night", s_consec_night, s_consec_day);
+    /* GPIO photo sensor (gpio9) is the primary day/night signal: 0=night, 1=day.
+     * Map it to a synthetic luma so the hysteresis logic below works unchanged. */
+    HI_U8 effective = luma;
+    if (b->gpio_photo_sensor >= 0) {
+        int photo = gpio_read(b->gpio_photo_sensor);
+        effective = (photo == 0) ? 0u : 255u;
+        LOGGER(LOGGER_LEVEL_DEBUG, "[board][mjsxj02hl] luma=%u photo_gpio=%d effective=%u mode=%s consec_n=%d consec_d=%d",
+               luma, photo, effective, s_current_mode ? "day" : "night", s_consec_night, s_consec_day);
+    } else {
+        LOGGER(LOGGER_LEVEL_DEBUG, "[board][mjsxj02hl] luma=%u mode=%s consec_n=%d consec_d=%d",
+               luma, s_current_mode ? "day" : "night", s_consec_night, s_consec_day);
+    }
 
-    if (luma < MJSXJ02HL_NIGHT_LUM) {
+    if (effective < MJSXJ02HL_NIGHT_LUM) {
         s_consec_night++;
         s_consec_day = 0;
-    } else if (luma > MJSXJ02HL_DAY_LUM) {
+    } else if (effective > MJSXJ02HL_DAY_LUM) {
         s_consec_day++;
         s_consec_night = 0;
     } else {
