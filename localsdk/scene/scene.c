@@ -256,10 +256,14 @@ static int scene_handler(void *user, const char *section,
             parse_u32_arr(v, p->ae_route_dgain,    ISP_AE_ROUTE_EX_MAX_NODES);
         else if (strcasecmp(name, "RouteEXISPDGain") == 0)
             parse_u32_arr(v, p->ae_route_isp_dgain, ISP_AE_ROUTE_EX_MAX_NODES);
-        else if (strcasecmp(name, "AutoCompesation") == 0) {
-            /* Per-segment AE luma target compensation (INI typo: "Compesation").
-             * The ISP exposes a single scalar u8Compensation; the vendor uses the
-             * steady-state (last) value — e.g. "82,82,80,80,80,80" → 80. */
+
+    } else if (strcasecmp(section, "dynamic_ae") == 0) {
+        /* AutoCompesation (INI typo: missing 'n') is a per-exposure-segment AE
+         * luma target table, e.g. "82,82,80,80,80,80". The ISP exposes a single
+         * scalar u8Compensation; the values are near-constant (80-82) so we apply
+         * the steady-state (last, longest-exposure) value statically rather than
+         * running a segment-tracking thread. Matches the original (Comp=80). */
+        if (strcasecmp(name, "AutoCompesation") == 0) {
             HI_U8 arr[8];
             int n = parse_u8_arr(v, arr, 8);
             if (n > 0)
