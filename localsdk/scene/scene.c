@@ -735,6 +735,36 @@ static void apply_gamma(void)
                g_jxf22_gamma[512]);
 }
 
+/* Dehaze — the original firmware runs dehaze (bStaticDehaze=1, bDynamicDehaze=1)
+   but it does NOT appear in /proc/umap/isp, which is why our "all /proc params
+   match" comparison missed it. Dehaze adds contrast and darkens the veil/shadows;
+   without it our image looks flat and its shadows sit lifted. INI [static_dehaze]:
+   Enable=1, UserLut=1 (all 255), OpType=manual; [dynamic_dehaze] ManualDehazeStr
+   ramps 90 (bright day) -> 120 (low light). We apply the daytime strength here as
+   a first step; a per-exposure ramp can follow if this closes the contrast gap. */
+static void apply_dehaze(void)
+{
+    ISP_DEHAZE_ATTR_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetDehazeAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetDehazeAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
+
+    attr.bEnable        = HI_TRUE;
+    attr.bUserLutEnable = HI_TRUE;
+    memset(attr.au8DehazeLut, 255, sizeof(attr.au8DehazeLut));
+    attr.enOpType             = OP_TYPE_MANUAL;
+    attr.stManual.u8strength  = 90;  /* [dynamic_dehaze] ManualDehazeStr daytime value */
+
+    ret = HI_MPI_ISP_SetDehazeAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetDehazeAttr failed 0x%x", (unsigned)ret);
+    else
+        LOGGER(LOGGER_LEVEL_INFO, "[scene] Dehaze enabled (manual strength=%u)",
+               attr.stManual.u8strength);
+}
+
 static void apply_ca(const scene_params_t *p)
 {
     ISP_CA_ATTR_S attr;
@@ -976,6 +1006,7 @@ static void apply_scene(const scene_params_t *p)
     apply_nr(p);
     apply_demosaic();
     apply_gamma();
+    apply_dehaze();
     apply_ca(p);
     apply_ldci(p);
     apply_dpc(p);
