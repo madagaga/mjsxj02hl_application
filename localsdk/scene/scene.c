@@ -41,6 +41,7 @@
 #include "logger.h"
 
 #include "scene.h"
+#include "gamma_jxf22.h"
 
 /* -------------------------------------------------------------------------
  * Internal types
@@ -698,6 +699,32 @@ static void apply_demosaic(void)
                hf_str[0], smooth_rng[0]);
 }
 
+/* Gamma tone curve — the stock vendor curve (1025 nodes, from libsns_f22.so).
+   The ISP default gamma lifts shadows/mids more than the vendor curve, making
+   our image flat/washed out (measured: std 48 vs 66, blacks lifted, highlights
+   compressed). Apply the extracted curve via the runtime channel so we get the
+   original's contrast (deeper blacks, brighter highlights). */
+static void apply_gamma(void)
+{
+    ISP_GAMMA_ATTR_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetGammaAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetGammaAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
+
+    attr.bEnable     = HI_TRUE;
+    attr.enCurveType = ISP_GAMMA_CURVE_USER_DEFINE;
+    memcpy(attr.u16Table, g_jxf22_gamma, sizeof(g_jxf22_gamma));
+
+    ret = HI_MPI_ISP_SetGammaAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetGammaAttr failed 0x%x", (unsigned)ret);
+    else
+        LOGGER(LOGGER_LEVEL_INFO, "[scene] Gamma applied (vendor 1025-node, mid=%u)",
+               g_jxf22_gamma[512]);
+}
+
 static void apply_ca(const scene_params_t *p)
 {
     ISP_CA_ATTR_S attr;
@@ -938,6 +965,7 @@ static void apply_scene(const scene_params_t *p)
     apply_saturation(p);
     apply_nr(p);
     apply_demosaic();
+    apply_gamma();
     apply_ca(p);
     apply_ldci(p);
     apply_dpc(p);
