@@ -622,9 +622,19 @@ static void apply_saturation(const scene_params_t *p)
         LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetCSCAttr failed 0x%x", (unsigned)ret);
         return;
     }
+    LOGGER(LOGGER_LEVEL_INFO,
+           "[scene] CSC before: en=%d luma=%u contr=%u hue=%u satu=%u limitedRange=%d",
+           (int)csc.bEnable, csc.u8Luma, csc.u8Contr, csc.u8Hue, csc.u8Satu,
+           (int)csc.bLimitedRangeEn);
+
     csc.u8Satu = grayscale ? 0 : 100;
+    /* Force full-range output (0-255). Our highlights capped at ~223 (never
+       reaching white) while the stock image clips at 255 — the symptom of a
+       limited-range (16-235) CSC output. Full range is the natural default but
+       set it explicitly in case the ISP default came up limited. */
+    csc.bLimitedRangeEn = HI_FALSE;
     ret = HI_MPI_ISP_SetCSCAttr(0, &csc);
-    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetCSCAttr u8Satu=%u ret=0x%x",
+    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetCSCAttr u8Satu=%u limitedRange=0 ret=0x%x",
            csc.u8Satu, (unsigned)ret);
 }
 
