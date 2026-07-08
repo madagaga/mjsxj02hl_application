@@ -640,9 +640,19 @@ static void apply_nr(const scene_params_t *p)
     memcpy(attr.stAuto.au8FineStr,    p->nr_fine_str,  sizeof(p->nr_fine_str));
     memcpy(attr.stAuto.au16CoringWgt, p->nr_coring_wgt, sizeof(p->nr_coring_wgt));
 
+    /* BayerNR coarse strength — per-ISO, read from stock /proc/umap/isp (no INI):
+       day (ISO~106) = 90, night (ISO~5279) = ~128. Our ISP default was ~110-120
+       even in daylight → over-denoised → lost fine texture (gravel). Ramp it so
+       daylight keeps texture while night still suppresses noise. Applied to all
+       four Bayer channels (R/Gr/Gb/B). */
+    static const HI_U16 coarse_str[ISP_AUTO_ISO_STRENGTH_NUM] =
+        {90,90,96,104,112,120,128,128,128,128,128,128,128,128,128,128};
+    for (int c = 0; c < ISP_BAYER_CHN_NUM; c++)
+        memcpy(attr.stAuto.au16CoarseStr[c], coarse_str, sizeof(coarse_str));
+
     ret = HI_MPI_ISP_SetNRAttr(0, &attr);
-    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetNRAttr fine[0]=%u coring[0]=%u ret=0x%x",
-           p->nr_fine_str[0], p->nr_coring_wgt[0], (unsigned)ret);
+    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetNRAttr fine[0]=%u coring[0]=%u coarse[0]=%u ret=0x%x",
+           p->nr_fine_str[0], p->nr_coring_wgt[0], coarse_str[0], (unsigned)ret);
 }
 
 /* Demosaic detail enhancement — the original firmware's per-ISO demosaic tuning,
