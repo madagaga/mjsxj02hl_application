@@ -645,6 +645,49 @@ static void apply_nr(const scene_params_t *p)
            p->nr_fine_str[0], p->nr_coring_wgt[0], (unsigned)ret);
 }
 
+/* Demosaic detail enhancement — the original firmware's per-ISO demosaic tuning,
+   read from /proc/umap/isp of the stock firmware (there is NO demosaic INI section;
+   the stock values come from the sensor calibration blob, which our OSS sensor
+   driver cannot feed to the ISP — the CMOS-default channel is ignored unless the
+   ALG_KEY feature bit is set, and enabling that also enabled a bad gamma path).
+   So we set it here via the runtime attr channel instead. Values ramp with ISO:
+     day  (ISO~106):  NonDirMFStr=32 NonDirHFStr=3 DetailSmoothRange=1
+     night(ISO~5279): NonDirMFStr=33 NonDirHFStr=7 DetailSmoothRange=4
+   Interpolated across the 16 ISO nodes below. This restores the crispness/"piqué"
+   of the stock image (our default had HFStr=0 / SmoothRange=2 → softer). */
+static void apply_demosaic(void)
+{
+    static const HI_U8 nondir_str[ISP_AUTO_ISO_STRENGTH_NUM] =
+        {64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64};
+    static const HI_U8 mf_str[ISP_AUTO_ISO_STRENGTH_NUM] =
+        {32,32,32,32,32,32,33,33,33,33,33,33,33,33,33,33};
+    static const HI_U8 hf_str[ISP_AUTO_ISO_STRENGTH_NUM] =
+        { 3, 3, 4, 4, 5, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
+    static const HI_U8 smooth_rng[ISP_AUTO_ISO_STRENGTH_NUM] =
+        { 1, 1, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4};
+
+    ISP_DEMOSAIC_ATTR_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetDemosaicAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetDemosaicAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
+
+    attr.bEnable  = HI_TRUE;
+    attr.enOpType = OP_TYPE_AUTO;
+    memcpy(attr.stAuto.au8NonDirStr,            nondir_str, sizeof(nondir_str));
+    memcpy(attr.stAuto.au8NonDirMFDetailEhcStr, mf_str,     sizeof(mf_str));
+    memcpy(attr.stAuto.au8NonDirHFDetailEhcStr, hf_str,     sizeof(hf_str));
+    memcpy(attr.stAuto.au8DetailSmoothRange,    smooth_rng, sizeof(smooth_rng));
+
+    ret = HI_MPI_ISP_SetDemosaicAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetDemosaicAttr failed 0x%x", (unsigned)ret);
+    else
+        LOGGER(LOGGER_LEVEL_INFO, "[scene] Demosaic HFStr[0]=%u SmoothRng[0]=%u (per-ISO ramp)",
+               hf_str[0], smooth_rng[0]);
+}
+
 static void apply_ca(const scene_params_t *p)
 {
     ISP_CA_ATTR_S attr;
@@ -884,6 +927,7 @@ static void apply_scene(const scene_params_t *p)
     apply_ccm(p);
     apply_saturation(p);
     apply_nr(p);
+    apply_demosaic();
     apply_ca(p);
     apply_ldci(p);
     apply_dpc(p);
