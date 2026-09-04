@@ -341,16 +341,16 @@ static HI_S32 mjsxj02hl_init(void)
     board_gpio_write(b->gpio_ircut_a, 0);
     board_gpio_write(b->gpio_ircut_b, 0);
 
-    /* Bistable IR-cut: physical filter position is unknown at power-on.
-     * board_ircut_close() derives its day-direction pulse from A transitioning
-     * 1→0, which requires GPIOs at (1,1) beforehand.  From the boot (0,0) state
-     * that pulse is absent.  Drive it explicitly: A=0 already, raise B for
-     * step_us — A=0,B=1 is the vector that seats the filter in day position —
-     * then release.  Matches the original firmware "click at boot". */
-    board_gpio_write(b->gpio_ircut_b, 1);
-    usleep((unsigned)b->gpio_ircut_step_us);
-    board_gpio_write(b->gpio_ircut_b, 0);
-    LOGGER(LOGGER_LEVEL_INFO, "[board][mjsxj02hl] init: IR-cut boot pulse → day (filter in)");
+    /* Bistable IR-cut: at cold boot the filter's latched position is unknown.
+     * A single day-direction pulse is a silent no-op when the filter is already
+     * latched in day (which is why our boot made no "click", unlike the stock
+     * firmware). Drive a full night→day cycle so the motor is always actuated
+     * into a known day (filter-in) position and audibly seats. Runs before the
+     * sensor produces frames, so the brief night excursion is not visible. */
+    board_ircut_open();                  /* pulse toward night (filter out) */
+    usleep(300000);                      /* let the motor reach the night stop */
+    board_ircut_close();                 /* pulse back to day (filter in) */
+    LOGGER(LOGGER_LEVEL_INFO, "[board][mjsxj02hl] init: IR-cut boot seat cycle night→day (filter in)");
 
     HI_S32 ret = scene_init(MJSXJ02HL_SCENE_DAY, MJSXJ02HL_SCENE_NIGHT, BOARD_TARGET_FPS);
     if (ret != 0) {
