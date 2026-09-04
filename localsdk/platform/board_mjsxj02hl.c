@@ -21,13 +21,21 @@
 #include "mpi_vi.h"
 #include "mpi_sys.h"
 #include "mpi_vb.h"
+#include "mpi_isp.h"
 #include "../sensor/jxf/sensor_jxf22.h"
 #include "../scene/scene.h"
 #include "../../logger/logger.h"
 
-/* Board-specific constants (BOARD_TARGET_FPS lives in board_mjsxj02hl.h) */
-#define MJSXJ02HL_NIGHT_LUM    30     /* u8AveLum below this → night candidate */
-#define MJSXJ02HL_DAY_LUM      60     /* u8AveLum above this → day candidate */
+/* Day/night detection uses the AE demand (ISO), NOT the metered output luma.
+ * The stock firmware judges day/night from the AE exposure/gain (libsceneauto
+ * photo_sensitive_ev_judge / gain_judge query HI_MPI_ISP_QueryExposureInfo /
+ * QueryWBInfo) — there is no light-sensor GPIO/ADC (gpio9 stays 1 in the dark).
+ * u8AveLum is unusable: once the night ISP profile is applied it collapses a
+ * lit room into ~46-56 (the 30-60 dead zone) and the camera stays stuck in
+ * night. ISO reflects the actual light demand and does not collapse:
+ * measured on the stock camera — lit room ISO~1086, dark room ISO~5025. */
+#define MJSXJ02HL_NIGHT_ISO  3000     /* ISO above this → dark → night candidate */
+#define MJSXJ02HL_DAY_ISO    2000     /* ISO below this → lit  → day candidate   */
 #define MJSXJ02HL_HYSTERESIS    3     /* consecutive samples required for transition */
 #define MJSXJ02HL_SETTLE_S     15     /* seconds to skip sampling after transition */
 
@@ -364,39 +372,30 @@ static HI_S32 mjsxj02hl_init(void)
 
 static void mjsxj02hl_on_luma(HI_U8 luma)
 {
-    const board_cfg_t *b = &g_board_mjsxj02hl;
-
     if (s_settling > 0) {
         s_settling--;
         return;
     }
 
-    /* Physical photosensor (gpio9) is the primary day/night signal: 1=light (day),
-     * 0=dark (night). Map it to a synthetic luma so the hysteresis below is
-     * unchanged. The AE u8AveLum must NOT drive this on its own: once the night
-     * ISP profile is applied (scene_set_night lowers exposure + grayscale), the
-     * metered luma of a fully-lit room falls into the 30-60 dead zone, so the day
-     * transition never re-triggers and the camera stays stuck in night. The
-     * photosensor reads ambient light directly, independent of the ISP profile.
-     * u8AveLum stays as a fallback only when no photosensor pin is present. */
-    HI_U8 effective = luma;
-    if (b->gpio_photo_sensor >= 0) {
-        int photo = gpio_read(b->gpio_photo_sensor);
-        effective = (photo == 0) ? 0u : 255u;
-        LOGGER(LOGGER_LEVEL_DEBUG, "[board][mjsxj02hl] luma=%u photo_gpio=%d effective=%u mode=%s consec_n=%d consec_d=%d",
-               luma, photo, effective, s_current_mode ? "day" : "night", s_consec_night, s_consec_day);
-    } else {
-        LOGGER(LOGGER_LEVEL_DEBUG, "[board][mjsxj02hl] luma=%u mode=%s consec_n=%d consec_d=%d",
-               luma, s_current_mode ? "day" : "night", s_consec_night, s_consec_day);
-    }
+    /* Judge day/night from the AE ISO (light demand), not the passed u8AveLum.
+     * u8AveLum collapses into the dead zone once the night profile is applied
+     * (see the ISO thresholds above); ISO reflects how much the AE has to
+     * amplify and stays monotonic with darkness across day/night profiles. */
+    ISP_EXP_INFO_S exp;
+    if (HI_MPI_ISP_QueryExposureInfo(0, &exp) != HI_SUCCESS)
+        return;
+    HI_U32 iso = exp.u32Iso;
 
-    if (effective < MJSXJ02HL_NIGHT_LUM) {
+    LOGGER(LOGGER_LEVEL_DEBUG, "[board][mjsxj02hl] iso=%u luma=%u mode=%s consec_n=%d consec_d=%d",
+           iso, luma, s_current_mode ? "day" : "night", s_consec_night, s_consec_day);
+
+    if (iso > MJSXJ02HL_NIGHT_ISO) {          /* dark */
         s_consec_night++;
         s_consec_day = 0;
-    } else if (effective > MJSXJ02HL_DAY_LUM) {
+    } else if (iso < MJSXJ02HL_DAY_ISO) {     /* lit */
         s_consec_day++;
         s_consec_night = 0;
-    } else {
+    } else {                                   /* ambiguous gap */
         s_consec_night = 0;
         s_consec_day   = 0;
     }
