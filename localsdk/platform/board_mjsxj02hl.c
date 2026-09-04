@@ -384,7 +384,7 @@ static void mjsxj02hl_on_luma(HI_U8 luma)
     ISP_EXP_INFO_S exp;
     if (HI_MPI_ISP_QueryExposureInfo(0, &exp) != HI_SUCCESS)
         return;
-    HI_U32 iso = exp.u32Iso;
+    HI_U32 iso = exp.u32ISO;
 
     LOGGER(LOGGER_LEVEL_DEBUG, "[board][mjsxj02hl] iso=%u luma=%u mode=%s consec_n=%d consec_d=%d",
            iso, luma, s_current_mode ? "day" : "night", s_consec_night, s_consec_day);
