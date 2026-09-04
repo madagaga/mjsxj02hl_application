@@ -155,6 +155,25 @@ static void board_softlight_init(void)
     }
 }
 
+/* IR LED flood — a PWM-dimmed IR array on channel 3 (from RE of the stock
+ * liblocalsdk: local_sdk_open_night_light → HI_PWM_ModifyChnDuty(chn 3), period
+ * 1892). The IR light only reaches the sensor when the IR-cut filter is open
+ * (night); it is NOT gpio52/53 (verified live: toggling those does nothing).
+ * on = full duty, off = 0. */
+#define BOARD_IR_PWM_CHN     3
+#define BOARD_IR_PWM_PERIOD  1892
+static void board_ir_pwm(int on)
+{
+    if (g_pwmFd < 0) return;
+    struct pwm_data_s d = {
+        .pwm_num = BOARD_IR_PWM_CHN,
+        .duty    = on ? BOARD_IR_PWM_PERIOD : 0,
+        .period  = BOARD_IR_PWM_PERIOD,
+        .enable  = 1,
+    };
+    ioctl(g_pwmFd, PWM_CMD_WRITE, &d);
+}
+
 /* -------------------------------------------------------------------------
  * Button polling thread
  * ---------------------------------------------------------------------- */
@@ -284,18 +303,16 @@ static void board_apply_mode(HI_BOOL is_night)
     if (is_night) {
         /* Switch ISP to night profile first (grayscale + low gain) before IR floods in */
         scene_set_night();
-        board_gpio_write(b->gpio_ir_led_a, 1);
-        if (b->gpio_ir_led_b >= 0) board_gpio_write(b->gpio_ir_led_b, 1);
-        board_ircut_open();
-        LOGGER(LOGGER_LEVEL_INFO, "[board][mjsxj02hl] → NIGHT: scene night, IR LED on, IR-cut open");
+        board_ir_pwm(1);          /* IR LED flood on (PWM chn 3) */
+        board_ircut_open();       /* open the filter so IR reaches the sensor */
+        LOGGER(LOGGER_LEVEL_INFO, "[board][mjsxj02hl] → NIGHT: scene night, IR PWM on, IR-cut open");
     } else {
         /* Close IR-cut first, wait for motor, then restore colour ISP */
         board_ircut_close();
         usleep(1500000); /* 1.5s for IR-cut filter motor to fully insert */
         scene_set_day();
-        board_gpio_write(b->gpio_ir_led_a, 0);
-        if (b->gpio_ir_led_b >= 0) board_gpio_write(b->gpio_ir_led_b, 0);
-        LOGGER(LOGGER_LEVEL_INFO, "[board][mjsxj02hl] → DAY: IR-cut closed, scene day, IR LED off");
+        board_ir_pwm(0);          /* IR LED flood off */
+        LOGGER(LOGGER_LEVEL_INFO, "[board][mjsxj02hl] → DAY: IR-cut closed, scene day, IR PWM off");
     }
     s_current_mode = is_night ? 0 : 1;
     if (s_mode_change_cb) s_mode_change_cb(is_night);
