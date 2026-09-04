@@ -107,6 +107,21 @@ typedef struct {
     HI_U32  dld_iso_cnt;
     HI_U32  dld_iso_level[ISP_AUTO_ISO_STRENGTH_NUM];
     HI_U16  dld_strength[ISP_AUTO_ISO_STRENGTH_NUM];
+    /* [dynamic_linear_drc] local dynamic-contrast tables (per-ISO). These shape
+       shadow/highlight local contrast and the dark/bright gain limits; without
+       them the DRC only had our per-ISO Strength and the ISP defaults for the
+       rest, leaving the image flat with lifted shadows. */
+    HI_BOOL dld_lm_present;
+    HI_U8   dld_lm_bright_max[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_lm_bright_min[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_lm_dark_max[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_lm_dark_min[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_bright_gain_lmt[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_bright_gain_lmt_step[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_dark_gain_lmt_y[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_dark_gain_lmt_c[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_contrast_ctrl[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_detail_adjust[ISP_AUTO_ISO_STRENGTH_NUM];
 
     /* [static_drc] */
     HI_BOOL drc_enable;
@@ -405,6 +420,26 @@ static int scene_handler(void *user, const char *section,
             parse_u32_arr(v, p->dld_iso_level, ISP_AUTO_ISO_STRENGTH_NUM);
         else if (strcasecmp(name, "Strength") == 0)
             parse_u16_arr(v, p->dld_strength, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "LocalMixingBrightMax") == 0)
+            { parse_u8_arr(v, p->dld_lm_bright_max, ISP_AUTO_ISO_STRENGTH_NUM); p->dld_lm_present = HI_TRUE; }
+        else if (strcasecmp(name, "LocalMixingBrightMin") == 0)
+            parse_u8_arr(v, p->dld_lm_bright_min, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "LocalMixingDarkMax") == 0)
+            parse_u8_arr(v, p->dld_lm_dark_max, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "LocalMixingDarkMin") == 0)
+            parse_u8_arr(v, p->dld_lm_dark_min, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "BrightGainLmt") == 0)
+            parse_u8_arr(v, p->dld_bright_gain_lmt, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "BrightGainLmtStep") == 0)
+            parse_u8_arr(v, p->dld_bright_gain_lmt_step, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "DarkGainLmtY") == 0)
+            parse_u8_arr(v, p->dld_dark_gain_lmt_y, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "DarkGainLmtC") == 0)
+            parse_u8_arr(v, p->dld_dark_gain_lmt_c, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "ContrastControl") == 0)
+            parse_u8_arr(v, p->dld_contrast_ctrl, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "DetailAdjustFactor") == 0)
+            parse_u8_arr(v, p->dld_detail_adjust, ISP_AUTO_ISO_STRENGTH_NUM);
 
     } else if (strcasecmp(section, "static_ldci") == 0) {
         p->ldci_present = HI_TRUE;
@@ -965,6 +1000,26 @@ static HI_U16 dld_interp(const scene_params_t *p, HI_U32 iso)
     return p->dld_strength[n - 1];
 }
 
+/* Generic per-ISO linear interpolation over a HI_U8 table (same node grid as
+   dld_interp), for the [dynamic_linear_drc] local-contrast parameters. */
+static HI_U8 dld_interp_u8(const scene_params_t *p, const HI_U8 *val, HI_U32 iso)
+{
+    HI_U32 n = p->dld_iso_cnt;
+    if (n == 0) return 0;
+    if (n > ISP_AUTO_ISO_STRENGTH_NUM) n = ISP_AUTO_ISO_STRENGTH_NUM;
+    if (iso <= p->dld_iso_level[0])     return val[0];
+    if (iso >= p->dld_iso_level[n - 1]) return val[n - 1];
+    for (HI_U32 i = 1; i < n; i++) {
+        if (iso <= p->dld_iso_level[i]) {
+            HI_S32 lo = (HI_S32)p->dld_iso_level[i - 1], hi = (HI_S32)p->dld_iso_level[i];
+            HI_S32 vlo = val[i - 1], vhi = val[i];
+            if (hi == lo) return (HI_U8)vlo;
+            return (HI_U8)(vlo + (vhi - vlo) * ((HI_S32)iso - lo) / (hi - lo));
+        }
+    }
+    return val[n - 1];
+}
+
 static void apply_dynamic_drc(const scene_params_t *p, HI_U32 iso)
 {
     if (!p || !p->mod_dyn_lineardrc || !p->dld_enable) return;
@@ -977,6 +1032,24 @@ static void apply_dynamic_drc(const scene_params_t *p, HI_U32 iso)
     /* Write to whichever slot the current op-type uses. */
     attr.stManual.u16Strength = s;
     attr.stAuto.u16Strength   = s;
+
+    /* Local dynamic-contrast fields (top-level ISP_DRC_ATTR_S) — the stock
+       firmware modulates these per-ISO too. DarkGainLmtY limits shadow gain
+       (deepens blacks), ContrastControl sets contrast, LocalMixingDark/Bright
+       shape local contrast. Without them the DRC was flat with lifted shadows. */
+    if (p->dld_lm_present) {
+        attr.u8LocalMixingBrightMax = dld_interp_u8(p, p->dld_lm_bright_max, iso);
+        attr.u8LocalMixingBrightMin = dld_interp_u8(p, p->dld_lm_bright_min, iso);
+        attr.u8LocalMixingDarkMax   = dld_interp_u8(p, p->dld_lm_dark_max, iso);
+        attr.u8LocalMixingDarkMin   = dld_interp_u8(p, p->dld_lm_dark_min, iso);
+        attr.u8BrightGainLmt        = dld_interp_u8(p, p->dld_bright_gain_lmt, iso);
+        attr.u8BrightGainLmtStep    = dld_interp_u8(p, p->dld_bright_gain_lmt_step, iso);
+        attr.u8DarkGainLmtY         = dld_interp_u8(p, p->dld_dark_gain_lmt_y, iso);
+        attr.u8DarkGainLmtC         = dld_interp_u8(p, p->dld_dark_gain_lmt_c, iso);
+        attr.u8ContrastControl      = dld_interp_u8(p, p->dld_contrast_ctrl, iso);
+        attr.s8DetailAdjustFactor   = (HI_S8)dld_interp_u8(p, p->dld_detail_adjust, iso);
+    }
+
     HI_MPI_ISP_SetDRCAttr(0, &attr);
 }
 
