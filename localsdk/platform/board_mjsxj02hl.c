@@ -130,7 +130,12 @@ static void gpio_all_init(const board_cfg_t *b)
  * ---------------------------------------------------------------------- */
 
 #define PWM_DEV_PATH  "/dev/pwm"
-#define PWM_CMD_WRITE _IOW('p', 0x01, struct pwm_data_s)
+/* The /dev/pwm driver uses a RAW ioctl command number (1), not an _IO*-encoded
+ * one — verified by RE of the stock liblocalsdk HI_PWM_* functions, which all
+ * call ioctl(fd, 1, &{channel, duty, ...}). Our previous _IOW('p',0x01,...)
+ * encoded to 0x40107001 and was silently rejected (EINVAL), so nothing drove
+ * the PWM. The arg's first two u32 are {channel, duty}, matching pwm_data_s. */
+#define PWM_CMD_WRITE 1
 
 struct pwm_data_s {
     unsigned int pwm_num;
