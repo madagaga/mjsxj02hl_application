@@ -14,11 +14,12 @@
 #include <sys/file.h>
 
 #include "./logger/logger.h"
-#include "./localsdk/localsdk.h"
 #include "./localsdk/init.h"
+#include "./localsdk/video/video.h"
 #include "./configs/configs.h"
 #include "./mqtt/mqtt.h"
 #include "./rtsp/rtsp.h"
+#include "mpi_sys.h"
 
 // Signal callback
 void signal_callback(int signal) {
@@ -26,11 +27,8 @@ void signal_callback(int signal) {
     
     // Enable orange LED
     if(APP_CFG.general.led) {
-        if(local_sdk_indicator_led_option(true, false) == LOCALSDK_OK) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_indicator_led_option(true, false)");
-        else {
-            LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "local_sdk_indicator_led_option(true, false)");
-            signal = EX_SOFTWARE;
-        }
+        board_indicator_led(true, false);
+        LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "board_indicator_led(true, false)");
     }
     
     // MQTT free
@@ -100,6 +98,9 @@ int main(int argc, char **argv) {
         } else if(strcmp(argv[1], "--get-image") == 0) { // Get image
             if(argc == 3) {
                 if(system("pidof -o %PPID mjsxj02hl > /dev/null") == EX_OK) {
+                    /* Connect this subprocess to the already-running MPP instance.
+                       Reference-counted: safe to call even if main process has it. */
+                    HI_MPI_SYS_Init();
                     int lock_fd = open("/tmp/mjsxj02hl_get_image.lock", O_CREAT | O_RDWR, 0666);
                     if(lock_fd < 0) {
                         printf("Error: unable to open snapshot lock file (errno=%d)\n", errno);
@@ -118,22 +119,22 @@ int main(int argc, char **argv) {
                     }
 
                     // Best-effort: request I-frame before snapshot
-                    local_sdk_video_force_I_frame(LOCALSDK_VIDEO_SECONDARY_CHANNEL);
+                    video_force_i_frame(LOCALSDK_VIDEO_SECONDARY_CHANNEL);
 
                     int attempt = 0;
                     for(attempt = 0; attempt < 3; attempt++) {
-                        if(local_sdk_video_get_jpeg(LOCALSDK_VIDEO_SECONDARY_CHANNEL, argv[2]) == LOCALSDK_OK) {
+                        if(video_get_jpeg(LOCALSDK_VIDEO_SECONDARY_CHANNEL, argv[2]) == LOCALSDK_OK) {
                             flock(lock_fd, LOCK_UN);
                             close(lock_fd);
                             return EX_OK;
                         }
                         usleep(150000);
-                        local_sdk_video_force_I_frame(LOCALSDK_VIDEO_SECONDARY_CHANNEL);
+                        video_force_i_frame(LOCALSDK_VIDEO_SECONDARY_CHANNEL);
                     }
 
                     flock(lock_fd, LOCK_UN);
                     close(lock_fd);
-                    printf("Error: local_sdk_video_get_jpeg() failed after retries!\n");
+                    printf("Error: video_get_jpeg() failed after retries!\n");
                     return EX_SOFTWARE;
                 } else {
                     printf("Error: main thread of mjsxj02hl application is not running!\n");
@@ -192,16 +193,16 @@ int main(int argc, char **argv) {
             
             // Onboard LED indicator
             if(APP_CFG.general.led) { // Enable blue LED
-                if(local_sdk_indicator_led_option(false, true) == LOCALSDK_OK) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_indicator_led_option(false, true)");
-                else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_indicator_led_option()");
+                board_indicator_led(false, true);
+                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "board_indicator_led(false, true)");
             } else { // Disable LEDs
-                if(local_sdk_indicator_led_option(false, false) == LOCALSDK_OK) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_indicator_led_option(false, false)");
-                else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_indicator_led_option()");
+                board_indicator_led(false, false);
+                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "board_indicator_led(false, false)");
             }
-            
+
             // Factory reset callback
-            if(local_sdk_setup_keydown_set_callback(3000, factory_reset_callback) == LOCALSDK_OK) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "local_sdk_setup_keydown_set_callback()");
-            else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "local_sdk_setup_keydown_set_callback()");
+            board_set_button_callback(3000, factory_reset_callback);
+            LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "board_set_button_callback()");
             
             // RTSP server
             if(rtsp_init()) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "rtsp_init()");

@@ -7,3 +7,11 @@ strace_out
 PVS-Studio.log
 PVS-Studio.html
 /PVS-Studio.fullhtml
+exec log
+research
+.claude/settings.local.json
+
+# Local notes / scratch
+CLAUDE.md
+trace.txt
+tmp/

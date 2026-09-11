@@ -1,13 +1,13 @@
 SKIP_SHARED_LIBS = OFF
 
 CROSS_COMPILE = arm-himix100-linux-
-CCFLAGS = -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations
+CCFLAGS = -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations -I./include
 LDPATH = /opt/hisi-linux/x86-arm/arm-himix100-linux/target/usr/app/lib
 
 CC  = $(CROSS_COMPILE)gcc
 CXX = $(CROSS_COMPILE)g++
 
-LDFLAGS = -pthread -llocalsdk -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lsceneauto -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lsns_f22 -lpaho-mqtt3c -lyyjson -lrtspserver -lstdc++
+LDFLAGS = -pthread -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lpaho-mqtt3c -lyyjson -lrtspserver -lstdc++
 
 OUTPUT = ./bin
 LIBDIR = ./lib
@@ -19,7 +19,7 @@ LIBDIR = ./lib
 all: mkdirs mjsxj02hl
 
 mjsxj02hl: ./mjsxj02hl.c external-libs objects
-	$(CC) $(CCFLAGS) -L$(LDPATH) ./mjsxj02hl.c $(OUTPUT)/objects/*.o $(OUTPUT)/objects/*.a $(LDFLAGS) -o $(OUTPUT)/mjsxj02hl
+	$(CC) $(CCFLAGS) -L$(LDPATH) ./mjsxj02hl.c $(OUTPUT)/objects/*.o $(OUTPUT)/objects/*.a -o $(OUTPUT)/mjsxj02hl $(LDFLAGS)
 
 ##############
 # PVS-STUDIO #
@@ -91,7 +91,7 @@ librtspserver.so:
 # APPLICATION OBJECTS #
 #######################
 
-objects: logger.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o
+objects: logger.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o sensor.o board.o jxf22_cmos.o jxf22_ctl.o scene.o
 
 logger.o: ./logger/logger.c
 	$(CC) $(CCFLAGS) -c ./logger/logger.c -o $(OUTPUT)/objects/logger.o
@@ -131,6 +131,21 @@ homeassistant.o: ./mqtt/homeassistant.c
 
 rtsp.o: ./rtsp/rtsp.c
 	$(CC) $(CCFLAGS) -c ./rtsp/rtsp.c -o $(OUTPUT)/objects/rtsp.o
+
+sensor.o: ./localsdk/sensor/jxf/sensor_jxf22.c
+	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/sensor_jxf22.c -o $(OUTPUT)/objects/sensor.o
+
+board.o: ./localsdk/platform/board_mjsxj02hl.c
+	$(CC) $(CCFLAGS) -c ./localsdk/platform/board_mjsxj02hl.c -o $(OUTPUT)/objects/board.o
+
+jxf22_cmos.o: ./localsdk/sensor/jxf/jxf22_cmos.c
+	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_cmos.c -o $(OUTPUT)/objects/jxf22_cmos.o
+
+jxf22_ctl.o: ./localsdk/sensor/jxf/jxf22_sensor_ctl.c
+	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_sensor_ctl.c -o $(OUTPUT)/objects/jxf22_ctl.o
+
+scene.o: ./localsdk/scene/scene.c
+	$(CC) $(CCFLAGS) -I./configs/inih -I./logger -c ./localsdk/scene/scene.c -o $(OUTPUT)/objects/scene.o
 
 clean:
 	-rm -rf $(OUTPUT)/*

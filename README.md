@@ -7,6 +7,37 @@ Application for Xiaomi Smart Camera Standard Edition (MJSXJ02HL) with RTSP and M
 **Attention! This firmware is no longer supported by the author. We recommend using [OpenIPC](https://github.com/OpenIPC/device-mjsxj02hl).**
 
 
+## OSS `localsdk` rewrite — Roadmap
+
+This branch replaces the proprietary `liblocalsdk.so` (and the vendor blobs
+`libsceneauto.so` / `libsns_f22.so`) with an open-source C implementation on top of
+the Hisilicon MPP, so the application no longer depends on the original firmware's
+closed libraries.
+
+### Done
+
+- OSS reimplementation of the `local_sdk_*` API on the Hisilicon MPP — no vendor blobs.
+- Subsystems split into self-contained modules: video (VPSS + VENC), audio, speaker,
+  alarm (IVP humanoid + IVS motion detection), OSD, night.
+- Scene/ISP module replacing `libsceneauto.so`: day/night INI parsing and the full ISP
+  pipeline (AE/AWB/CCM, NR, demosaic, gamma, dehaze, DRC, sharpen, LDCI, DPC).
+- In-tree OSS JXF22 sensor driver replacing `libsns_f22.so`.
+- Board-centric platform layer: GPIO, IR / IR-cut, AE-ISO based day/night state machine.
+- VI pipeline on the SDK20190315 (3516Ev200) ABI, VPSS wrap + 3DNR, 180° orientation.
+- Day/night auto-switch, IR flood (PWM) and image rendering aligned to the original
+  firmware; ~24 h stability validated under a respawn watchdog.
+
+### To do
+
+- Night image: reduce noise/grain to match the original (per-ISO NR / demosaic + VPSS 3DNR).
+- Day/night switching: fix IR flapping at intermediate (dusk) light.
+- Daytime AE brightness alignment with the original.
+- Investigate the rare heap burst that can trigger an OOM kill (currently masked by the watchdog).
+- Replace the vendor boot loader `load3518ev300` (pinmux + module load) for full autonomy.
+- Local MP4 recording to SD card on motion / humanoid events.
+- Replace clear-text FTP/telnet with SSH (dropbear).
+
+
 ## Build
 
 1. Install Hi3518Ev300 [toolchain](https://dl.openipc.org/SDK/HiSilicon/Hi3516Ev200_16Ev300_18Ev300/Hi3516EV200R001C01SPC011/arm-himix100-linux.tgz):
