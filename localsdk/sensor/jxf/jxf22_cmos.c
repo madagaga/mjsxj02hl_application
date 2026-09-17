@@ -7,7 +7,15 @@
  *   - Per-frame AE/gain updates fill g_stSnsRegsInfo.astI2cData[] shadow regs;
  *     the ISP kernel driver writes I2C at VD interrupt time.
  *   - ISP_CMOS_DEFAULT_S fields that don't map to hi3516ev200 structs are NULLed;
- *     ISP uses built-in defaults for those (Gamma and BayerNR are populated).
+ *     ISP uses built-in defaults for those. Demosaic/BayerNR/AntiFalseColor are
+ *     populated with tables extracted byte-exact from the vendor libsns_f22.so
+ *     cmos_get_isp_default() (Ghidra decompile @0x11808) — these are sensor-
+ *     intrinsic noise/optics calibration, not scene (day/night) config, so they
+ *     belong here rather than in scene.c. Gamma/Sharpen/Ldci/Drc/Dehaze are left
+ *     unset: the vendor also ships static defaults for those, but scene.c already
+ *     applies the real per-firmware values at runtime via HI_MPI_ISP_Set*Attr
+ *     (validated against /proc/umap/isp — see CLAUDE.md), which would immediately
+ *     override a sensor-static duplicate here.
  */
 
 #include <stdio.h>
@@ -280,61 +288,62 @@ static HI_S32 cmos_init_awb_exp_function(AWB_SENSOR_EXP_FUNC_S *pstExpFuncs)
 
 /* ---- ISP default --------------------------------------------------------- */
 
-/* Gamma curve (1025 points, standard sRGB-ish curve from v3 source). */
-static ISP_CMOS_GAMMA_S g_stIspGamma = {
-    .au16Gamma = {
-        0,    93,   189,  285,  380,  473,  563,  649,  712,  772,
-        829,  885,  940,  995,  1051, 1108, 1167, 1201, 1236, 1272,
-        1308, 1345, 1381, 1418, 1455, 1492, 1528, 1564, 1599, 1634,
-        1667, 1699, 1731, 1761, 1790, 1818, 1846, 1874, 1900, 1926,
-        1952, 1977, 2001, 2025, 2049, 2072, 2095, 2117, 2140, 2161,
-        2182, 2202, 2222, 2241, 2260, 2279, 2297, 2314, 2332, 2349,
-        2366, 2383, 2400, 2417, 2434, 2450, 2467, 2483, 2500, 2516,
-        2532, 2547, 2563, 2578, 2593, 2608, 2623, 2638, 2652, 2666,
-        2681, 2694, 2708, 2721, 2734, 2747, 2759, 2772, 2784, 2796,
-        2809, 2821, 2833, 2845, 2857, 2869, 2882, 2894, 2906, 2919,
-        2932, 2944, 2957, 2970, 2982, 2995, 3007, 3019, 3031, 3043,
-        3055, 3066, 3078, 3088, 3099, 3110, 3120, 3131, 3141, 3151,
-        3161, 3170, 3180, 3189, 3199, 3208, 3218, 3227, 3237, 3246,
-        3255, 3264, 3273, 3282, 3291, 3300, 3308, 3317, 3326, 3334,
-        3343, 3351, 3360, 3368, 3377, 3385, 3393, 3402, 3410, 3418,
-        3427, 3435, 3443, 3451, 3460, 3468, 3476, 3483, 3491, 3499,
-        3507, 3514, 3521, 3529, 3536, 3543, 3550, 3557, 3564, 3571,
-        3578, 3585, 3592, 3598, 3605, 3612, 3619, 3625, 3632, 3638,
-        3645, 3651, 3658, 3664, 3671, 3677, 3683, 3690, 3696, 3702,
-        3709, 3715, 3722, 3728, 3734, 3741, 3747, 3753, 3760, 3766,
-        3773, 3779, 3785, 3792, 3798, 3804, 3811, 3817, 3824, 3830,
-        3836, 3843, 3850, 3856, 3863, 3870, 3876, 3883, 3889, 3896,
-        3902, 3908, 3915, 3921, 3927, 3932, 3938, 3943, 3949, 3954,
-        3959, 3965, 3970, 3975, 3980, 3985, 3990, 3995, 4000, 4005,
-        4011, 4016, 4021, 4026, 4032, 4037, 4042, 4047, 4053, 4058,
-        4063, 4068, 4074, 4079, 4084, 4089, 4095,
+/* Demosaic per-ISO tuning, byte-exact from vendor libsns_f22.so cmos_get_isp_default
+ * (.rodata @0x5280). Sensor-intrinsic (single table spanning the whole ISO range,
+ * no day/night variant) — this is why previous attempts to tune this via scene.c
+ * apply_demosaic() interpolation only ever approximated it (no INI section exists
+ * for demosaic). au8DetailSmoothRange ramping to 7 at high ISO (not 4, as our old
+ * 2-point interpolation guessed) is the fix for the night-grain regression. */
+static ISP_CMOS_DEMOSAIC_S g_stIspDemosaic = {
+    .bEnable                   = HI_TRUE,
+    .au8NonDirStr              = {64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64},
+    .au8NonDirMFDetailEhcStr   = {32,32,32,36,36,36,36,32,22,20,18,18,18,18,18,18},
+    .au8NonDirHFDetailEhcStr   = { 3, 3, 4, 5, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7},
+    .au8DetailSmoothRange      = { 1, 2, 2, 3, 3, 3, 4, 4, 5, 5, 7, 7, 7, 7, 7, 7},
+};
+
+/* BayerNR tuning, byte-exact from vendor libsns_f22.so cmos_get_isp_default
+ * (.rodata @0x4f7c). Sensor-intrinsic, same reasoning as Demosaic above.
+ * au16CoarseStr ramps to 170 at high ISO (our previous scene.c apply_nr() guess
+ * capped at 128) — under-denoising at night was the "grain superieur a l'original"
+ * regression. au8LutFineStr/au16LutCoringWgt here are the sensor defaults; scene.c
+ * apply_nr() still overrides FineStr/CoringWgt per day/night from the INI
+ * ([static_nr] has no CoarseStr section, confirming it's sensor- not scene-owned). */
+static ISP_CMOS_BAYERNR_S g_stIspBayerNr = {
+    .bEnable              = HI_TRUE,
+    .bBnrMonoSensorEn     = HI_FALSE,
+    .bNrLscEnable         = HI_FALSE,
+    .u8BnrLscMaxGain      = 0x60,
+    .u16BnrLscCmpStrength = 0x100,
+    .au8LutFineStr        = {80,80,90,90,90,90,80,70,60,50,50,50,50,50,40,40},
+    .au8ChromaStr         = {
+        {1,1,1,1,2,2,2,3,3,3,3,3,3,3,3,3},  /* R  */
+        {0,0,0,0,1,1,1,2,2,2,2,2,2,2,2,2},  /* Gr */
+        {0,0,0,0,1,1,1,2,2,2,2,2,2,2,2,2},  /* Gb */
+        {1,1,1,1,2,2,2,3,3,3,3,3,3,3,3,3},  /* B  */
+    },
+    .au8WDRFrameStr       = {0, 0, 0, 0},
+    .au8FusionFrameStr    = {0, 0, 0, 0},
+    .au16CoarseStr        = {
+        {90,100,100,110,110,120,130,150,160,170,170,170,170,170,170,170},  /* R  */
+        {90,100,100,110,110,120,130,150,160,170,170,170,170,170,170,170},  /* Gr */
+        {90,100,100,110,110,120,130,150,160,170,170,170,170,170,170,170},  /* Gb */
+        {90,100,100,110,110,120,130,150,160,170,170,170,170,170,170,170},  /* B  */
+    },
+    .au16LutCoringWgt     = {40,40,35,30,30,30,30,30,30,30,30,30,30,30,30,30},
+    .au16LutCoringRatio   = {
+        90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,
+        91,92,93,94,95,96,97,98,99,100,100,100,100,100,100,100,
+        100,
     },
 };
 
-/* BayerNR tuning (noise reduction per ISO level, 16 entries). */
-static ISP_CMOS_BAYERNR_S g_stIspBayerNr = {
-    .bEnable           = HI_TRUE,
-    .bBnrMonoSensorEn  = HI_FALSE,
-    .bNrLscEnable      = HI_FALSE,
-    .u8BnrLscMaxGain   = 0,
-    .u16BnrLscCmpStrength = 0,
-    .au8LutFineStr     = {32,32,32,32,32,32,40,48,56,60,64,68,72,76,80,84},
-    .au8ChromaStr      = {
-        {8,8,8,8,8,8,6,4,4,4,4,4,4,4,4,4},  /* R */
-        {8,8,8,8,8,8,6,4,4,4,4,4,4,4,4,4},  /* Gr */
-        {8,8,8,8,8,8,6,4,4,4,4,4,4,4,4,4},  /* Gb */
-        {8,8,8,8,8,8,6,4,4,4,4,4,4,4,4,4},  /* B */
-    },
-    .au8WDRFrameStr    = {16, 16, 16, 16},
-    .au8FusionFrameStr = {16, 16, 16, 16},
-    .au16CoarseStr     = {
-        {256,256,256,256,256,256,256,256,256,256,384,384,384,384,512,512},
-        {256,256,256,256,256,256,256,256,256,256,384,384,384,384,512,512},
-        {256,256,256,256,256,256,256,256,256,256,384,384,384,384,512,512},
-        {256,256,256,256,256,256,256,256,256,256,384,384,384,384,512,512},
-    },
-    .au16LutCoringWgt  = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/* AntiFalseColor, byte-exact from vendor libsns_f22.so cmos_get_isp_default
+ * (.rodata @0x4f58). Sensor-intrinsic, same reasoning as above. */
+static ISP_CMOS_ANTIFALSECOLOR_S g_stIspAntiFalseColor = {
+    .bEnable                       = HI_TRUE,
+    .au8AntiFalseColorThreshold    = {10,10,8,8,7,7,7,6,6,6,5,4,3,2,1,0},
+    .au8AntiFalseColorStrength     = { 8, 8,8,8,7,7,7,6,6,6,5,4,3,2,1,0},
 };
 
 static HI_S32 cmos_get_isp_default(VI_PIPE ViPipe, ISP_CMOS_DEFAULT_S *pstDef)
@@ -344,8 +353,18 @@ static HI_S32 cmos_get_isp_default(VI_PIPE ViPipe, ISP_CMOS_DEFAULT_S *pstDef)
 
     memset(pstDef, 0, sizeof(ISP_CMOS_DEFAULT_S));
 
-    pstDef->pstGamma   = &g_stIspGamma;
-    pstDef->pstBayerNr = &g_stIspBayerNr;
+    /* unKey bits matching the vendor binary exactly for these three modules
+     * (Ghidra decompile: unKey.u64Key |= 0x3b | (0x47 << 8), masked to just
+     * Demosaic/BayerNr/AntiFalseColor here — the ISP silently ignores any
+     * pst* pointer whose bit isn't set, which is why setting these pointers
+     * alone (the pre-RE state of this file) had zero effect). */
+    pstDef->unKey.bit1Demosaic      = 1;
+    pstDef->unKey.bit1BayerNr       = 1;
+    pstDef->unKey.bit1AntiFalseColor = 1;
+
+    pstDef->pstDemosaic       = &g_stIspDemosaic;
+    pstDef->pstBayerNr        = &g_stIspBayerNr;
+    pstDef->pstAntiFalseColor = &g_stIspAntiFalseColor;
 
     /* Sensor resolution for ISP */
     pstDef->stSensorMaxResolution.u32MaxWidth  = 1920;

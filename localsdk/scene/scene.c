@@ -686,62 +686,14 @@ static void apply_nr(const scene_params_t *p)
     memcpy(attr.stAuto.au8FineStr,    p->nr_fine_str,  sizeof(p->nr_fine_str));
     memcpy(attr.stAuto.au16CoringWgt, p->nr_coring_wgt, sizeof(p->nr_coring_wgt));
 
-    /* BayerNR coarse strength — per-ISO, read from stock /proc/umap/isp (no INI):
-       day (ISO~106) = 90, night (ISO~5279) = ~128. Our ISP default was ~110-120
-       even in daylight → over-denoised → lost fine texture (gravel). Ramp it so
-       daylight keeps texture while night still suppresses noise. Applied to all
-       four Bayer channels (R/Gr/Gb/B). */
-    static const HI_U16 coarse_str[ISP_AUTO_ISO_STRENGTH_NUM] =
-        {90,90,96,104,112,120,128,128,128,128,128,128,128,128,128,128};
-    for (int c = 0; c < ISP_BAYER_CHN_NUM; c++)
-        memcpy(attr.stAuto.au16CoarseStr[c], coarse_str, sizeof(coarse_str));
-
+    /* au16CoarseStr is intentionally left untouched here: it's sensor-intrinsic
+       (no [static_nr] CoarseStr key in either INI), now supplied byte-exact by
+       jxf22_cmos.c cmos_get_isp_default() via the CMOS-default unKey channel —
+       Get above already picked up that value, so re-Set below just writes it
+       straight back unmodified. */
     ret = HI_MPI_ISP_SetNRAttr(0, &attr);
-    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetNRAttr fine[0]=%u coring[0]=%u coarse[0]=%u ret=0x%x",
-           p->nr_fine_str[0], p->nr_coring_wgt[0], coarse_str[0], (unsigned)ret);
-}
-
-/* Demosaic detail enhancement — the original firmware's per-ISO demosaic tuning,
-   read from /proc/umap/isp of the stock firmware (there is NO demosaic INI section;
-   the stock values come from the sensor calibration blob, which our OSS sensor
-   driver cannot feed to the ISP — the CMOS-default channel is ignored unless the
-   ALG_KEY feature bit is set, and enabling that also enabled a bad gamma path).
-   So we set it here via the runtime attr channel instead. Values ramp with ISO:
-     day  (ISO~106):  NonDirMFStr=32 NonDirHFStr=3 DetailSmoothRange=1
-     night(ISO~5279): NonDirMFStr=33 NonDirHFStr=7 DetailSmoothRange=4
-   Interpolated across the 16 ISO nodes below. This restores the crispness/"piqué"
-   of the stock image (our default had HFStr=0 / SmoothRange=2 → softer). */
-static void apply_demosaic(void)
-{
-    static const HI_U8 nondir_str[ISP_AUTO_ISO_STRENGTH_NUM] =
-        {64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64};
-    static const HI_U8 mf_str[ISP_AUTO_ISO_STRENGTH_NUM] =
-        {32,32,32,32,32,32,33,33,33,33,33,33,33,33,33,33};
-    static const HI_U8 hf_str[ISP_AUTO_ISO_STRENGTH_NUM] =
-        { 3, 3, 4, 4, 5, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
-    static const HI_U8 smooth_rng[ISP_AUTO_ISO_STRENGTH_NUM] =
-        { 1, 1, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4};
-
-    ISP_DEMOSAIC_ATTR_S attr;
-    HI_S32 ret = HI_MPI_ISP_GetDemosaicAttr(0, &attr);
-    if (ret != HI_SUCCESS) {
-        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetDemosaicAttr failed 0x%x", (unsigned)ret);
-        return;
-    }
-
-    attr.bEnable  = HI_TRUE;
-    attr.enOpType = OP_TYPE_AUTO;
-    memcpy(attr.stAuto.au8NonDirStr,            nondir_str, sizeof(nondir_str));
-    memcpy(attr.stAuto.au8NonDirMFDetailEhcStr, mf_str,     sizeof(mf_str));
-    memcpy(attr.stAuto.au8NonDirHFDetailEhcStr, hf_str,     sizeof(hf_str));
-    memcpy(attr.stAuto.au8DetailSmoothRange,    smooth_rng, sizeof(smooth_rng));
-
-    ret = HI_MPI_ISP_SetDemosaicAttr(0, &attr);
-    if (ret != HI_SUCCESS)
-        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetDemosaicAttr failed 0x%x", (unsigned)ret);
-    else
-        LOGGER(LOGGER_LEVEL_INFO, "[scene] Demosaic HFStr[0]=%u SmoothRng[0]=%u (per-ISO ramp)",
-               hf_str[0], smooth_rng[0]);
+    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetNRAttr fine[0]=%u coring[0]=%u ret=0x%x",
+           p->nr_fine_str[0], p->nr_coring_wgt[0], (unsigned)ret);
 }
 
 /* Gamma tone curve — the stock vendor curve (1025 nodes, from libsns_f22.so).
@@ -1077,7 +1029,6 @@ static void apply_scene(const scene_params_t *p)
     apply_ccm(p);
     apply_saturation(p);
     apply_nr(p);
-    apply_demosaic();
     apply_gamma();
     apply_dehaze();
     apply_ca(p);
