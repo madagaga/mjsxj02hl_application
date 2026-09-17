@@ -36,6 +36,16 @@ closed libraries.
 - Replace the vendor boot loader `load3518ev300` (pinmux + module load) for full autonomy.
 - Local MP4 recording to SD card on motion / humanoid events.
 - Replace clear-text FTP/telnet with SSH (dropbear).
+- Day scene INI (`config_product_scene_1080p20_linear.ini`) `[static_dehaze] DehazeLut`
+  uses backslash line continuation without leading indentation; the vendored `inih`
+  (`configs/inih`, a git submodule of upstream `benhoyt/inih`) only recognizes an
+  indented continuation line, so this key currently fails to parse and the day dehaze
+  LUT stays all-zero. Fix pending a decision: either indent the continuation lines in
+  the INI file (lowest risk, touches only our own config data) or patch/fork `inih`
+  upstream. Not applied yet.
+- *Possible enhancement (not present in the original firmware):* IVP ROI masking to
+  exclude/focus zones for motion/humanoid detection (`hi_ivp_set_roi_attr` +
+  `hi_ivp_set_roi_map`) — mechanism confirmed by reverse-engineering, not wired up yet.
 
 
 ## Build

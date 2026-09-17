@@ -95,6 +95,31 @@ typedef struct {
 
     /* [static_ca] */
     HI_BOOL ca_enable;
+    HI_S32  ca_iso_ratio[ISP_AUTO_ISO_STRENGTH_NUM];
+
+    /* [static_dehaze] — differs day/night (day: flat pass-through LUT 255x256;
+       night: real ramp 107->255). [dynamic_dehaze] — strength ramps by raw
+       exposure (u32Exposure, not ISO), re-applied continuously like DRC.
+       Verified by RE of libsceneauto.so: HI_SCENE_SetStaticDeHaze applies the
+       LUT once; HI_SCENE_SetDynamicDehaze re-interpolates stManual.u8strength
+       on every exposure change. Our old code forced a flat LUT + fixed
+       strength=90 always -> correct-ish in daylight, wrong at night. */
+    HI_BOOL dehaze_enable;
+    HI_BOOL dehaze_user_lut;
+    int     dehaze_op_type;
+    HI_U8   dehaze_lut[256];
+    int     dehaze_lut_fill;      /* parse-time cursor across continuation lines */
+    HI_U32  dehaze_exp_cnt;
+    HI_U32  dehaze_exp_thresh[8];
+    HI_U8   dehaze_str[8];
+
+    /* [static_aeweight] — AE metering zone weight table (15 rows x 17 cols).
+       Center-weighted in both day/night INIs; the ISP defaults to a flat
+       table when this is never applied, which is the AE daytime brightness
+       gap vs the original (verified: HI_SCENE_SetAeWeightTab in libsceneauto.so
+       does exactly Get->patch au8Weight->Set, no unKey bit involved). */
+    HI_BOOL ae_weight_present;
+    HI_U8   ae_weight[AE_ZONE_ROW][AE_ZONE_COLUMN];
 
     /* [module_state] — only the flags we act on */
     HI_BOOL mod_static_drc;
@@ -339,6 +364,36 @@ static int scene_handler(void *user, const char *section,
     } else if (strcasecmp(section, "static_ca") == 0) {
         if (strcasecmp(name, "Enable") == 0)
             p->ca_enable = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "IsoRatio") == 0)
+            parse_s32_arr(v, p->ca_iso_ratio, ISP_AUTO_ISO_STRENGTH_NUM);
+
+    } else if (strcasecmp(section, "static_dehaze") == 0) {
+        if (strcasecmp(name, "Enable") == 0)
+            p->dehaze_enable = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "DehazeUserLutEnable") == 0)
+            p->dehaze_user_lut = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "DehazeOpType") == 0)
+            p->dehaze_op_type = atoi(v);
+        else if (strcasecmp(name, "DehazeLut") == 0) {
+            /* 256 values continued across ~16 lines (inih calls the handler once
+               per continuation line, each terminated by a literal '\' that is
+               not part of the data — strip it before tokenizing). */
+            char *buf = (char *)v;
+            size_t len = strlen(buf);
+            if (len > 0 && buf[len - 1] == '\\')
+                buf[len - 1] = '\0';
+            int remaining = 256 - p->dehaze_lut_fill;
+            if (remaining > 0)
+                p->dehaze_lut_fill += parse_u8_arr(buf, p->dehaze_lut + p->dehaze_lut_fill, remaining);
+        }
+
+    } else if (strcasecmp(section, "dynamic_dehaze") == 0) {
+        if (strcasecmp(name, "ExpThreshCnt") == 0)
+            p->dehaze_exp_cnt = (HI_U32)atoi(v);
+        else if (strcasecmp(name, "ExpThreshLtoH") == 0)
+            parse_u32_arr(v, p->dehaze_exp_thresh, 8);
+        else if (strcasecmp(name, "ManualDehazeStr") == 0)
+            parse_u8_arr(v, p->dehaze_str, 8);
 
     } else if (strcasecmp(section, "module_state") == 0) {
         if      (strcasecmp(name, "bStaticDRC") == 0)
@@ -461,6 +516,14 @@ static int scene_handler(void *user, const char *section,
             parse_u8_arr(v, p->ldci_neg_mean,  ISP_AUTO_ISO_STRENGTH_NUM);
         else if (strcasecmp(name, "AutoBlcCtrl") == 0)
             parse_u16_arr(v, p->ldci_blc_ctrl, ISP_AUTO_ISO_STRENGTH_NUM);
+
+    } else if (strcasecmp(section, "static_aeweight") == 0) {
+        p->ae_weight_present = HI_TRUE;
+        if (strncasecmp(name, "ExpWeight_", 10) == 0) {
+            int idx = atoi(name + 10);
+            if (idx >= 0 && idx < AE_ZONE_ROW)
+                parse_u8_arr(v, p->ae_weight[idx], AE_ZONE_COLUMN);
+        }
 
     } else if (strcasecmp(section, "static_dpc") == 0) {
         p->dpc_present = HI_TRUE;
@@ -724,12 +787,14 @@ static void apply_gamma(void)
 
 /* Dehaze — the original firmware runs dehaze (bStaticDehaze=1, bDynamicDehaze=1)
    but it does NOT appear in /proc/umap/isp, which is why our "all /proc params
-   match" comparison missed it. Dehaze adds contrast and darkens the veil/shadows;
-   without it our image looks flat and its shadows sit lifted. INI [static_dehaze]:
-   Enable=1, UserLut=1 (all 255), OpType=manual; [dynamic_dehaze] ManualDehazeStr
-   ramps 90 (bright day) -> 120 (low light). We apply the daytime strength here as
-   a first step; a per-exposure ramp can follow if this closes the contrast gap. */
-static void apply_dehaze(void)
+   match" comparison missed it. Verified by RE of libsceneauto.so
+   (HI_SCENE_SetStaticDeHaze / HI_SCENE_SetDynamicDehaze): the LUT is per-profile
+   (day: flat pass-through 255x256; night: a real 107->255 ramp) and the manual
+   strength is re-interpolated continuously from [dynamic_dehaze] by raw exposure
+   (u32Exposure), not fixed at 90 — night targets 120-130, not 90. This function
+   now applies the static half (enable/LUT/op-type); apply_dynamic_dehaze()
+   below re-applies the strength on every exposure change, same pattern as DRC. */
+static void apply_dehaze(const scene_params_t *p)
 {
     ISP_DEHAZE_ATTR_S attr;
     HI_S32 ret = HI_MPI_ISP_GetDehazeAttr(0, &attr);
@@ -738,18 +803,53 @@ static void apply_dehaze(void)
         return;
     }
 
-    attr.bEnable        = HI_TRUE;
-    attr.bUserLutEnable = HI_TRUE;
-    memset(attr.au8DehazeLut, 255, sizeof(attr.au8DehazeLut));
-    attr.enOpType             = OP_TYPE_MANUAL;
-    attr.stManual.u8strength  = 90;  /* [dynamic_dehaze] ManualDehazeStr daytime value */
+    attr.bEnable        = p->dehaze_enable;
+    attr.bUserLutEnable = p->dehaze_user_lut;
+    memcpy(attr.au8DehazeLut, p->dehaze_lut, sizeof(attr.au8DehazeLut));
+    attr.enOpType = p->dehaze_op_type ? OP_TYPE_MANUAL : OP_TYPE_AUTO;
+    if (p->dehaze_exp_cnt > 0)
+        attr.stManual.u8strength = p->dehaze_str[0];
 
     ret = HI_MPI_ISP_SetDehazeAttr(0, &attr);
     if (ret != HI_SUCCESS)
         LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetDehazeAttr failed 0x%x", (unsigned)ret);
     else
-        LOGGER(LOGGER_LEVEL_INFO, "[scene] Dehaze enabled (manual strength=%u)",
-               attr.stManual.u8strength);
+        LOGGER(LOGGER_LEVEL_INFO, "[scene] Dehaze enabled=%d lut[0]=%u strength=%u",
+               (int)attr.bEnable, attr.au8DehazeLut[0], attr.stManual.u8strength);
+}
+
+/* Re-interpolates the manual dehaze strength from [dynamic_dehaze] ExpThreshLtoH
+   / ManualDehazeStr by raw exposure (ISP_EXP_INFO_S.u32Exposure), mirroring
+   dld_interp() for DRC. Called from scene_dyn_thread on every exposure change. */
+static void apply_dynamic_dehaze(const scene_params_t *p, HI_U32 exposure)
+{
+    HI_U32 n = p->dehaze_exp_cnt;
+    if (n == 0) return;
+    if (n > 8) n = 8;
+
+    HI_U8 strength;
+    if (exposure <= p->dehaze_exp_thresh[0])
+        strength = p->dehaze_str[0];
+    else if (exposure >= p->dehaze_exp_thresh[n - 1])
+        strength = p->dehaze_str[n - 1];
+    else {
+        strength = p->dehaze_str[n - 1];
+        for (HI_U32 i = 1; i < n; i++) {
+            if (exposure <= p->dehaze_exp_thresh[i]) {
+                HI_S32 lo = (HI_S32)p->dehaze_exp_thresh[i - 1], hi = (HI_S32)p->dehaze_exp_thresh[i];
+                HI_S32 slo = p->dehaze_str[i - 1], shi = p->dehaze_str[i];
+                strength = (hi == lo) ? (HI_U8)slo
+                                      : (HI_U8)(slo + (shi - slo) * ((HI_S32)exposure - lo) / (hi - lo));
+                break;
+            }
+        }
+    }
+
+    ISP_DEHAZE_ATTR_S attr;
+    if (HI_MPI_ISP_GetDehazeAttr(0, &attr) != HI_SUCCESS)
+        return;
+    attr.stManual.u8strength = strength;
+    HI_MPI_ISP_SetDehazeAttr(0, &attr);
 }
 
 static void apply_ca(const scene_params_t *p)
@@ -762,6 +862,14 @@ static void apply_ca(const scene_params_t *p)
     }
 
     attr.bEnable = p->ca_enable;
+    /* [static_ca] IsoRatio — sensor-per-ISO CA correction ratio (Q1.10, 1024 =
+       neutral). Verified via RE of libsceneauto.so HI_SCENE_SetStaticCA: it
+       patches only bEnable + this table, never stCA.au32YRatioLut. Without it
+       we stayed at the ISP's neutral default (1024) instead of the day INI's
+       {1300,1300,1250,...} ramp — negligible visual impact (edge fringing
+       only) but now byte-faithful to the original. */
+    for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++)
+        attr.stCA.as32ISORatio[i] = p->ca_iso_ratio[i];
 
     ret = HI_MPI_ISP_SetCAAttr(0, &attr);
     if (ret != HI_SUCCESS)
@@ -927,6 +1035,35 @@ static void apply_dpc(const scene_params_t *p)
                attr.stAuto.au16Strength[8], attr.stAuto.au16BlendRatio[10]);
 }
 
+/* AE metering zone weight table — the original always applies this (day AND
+   night INI both carry [static_aeweight], center-weighted). We never called
+   it, so our AE ran on the ISP's flat default weighting -> averages in more
+   of the frame edges than the original -> our AE target luma reads higher
+   than the original's at the same Compensation (the scorecard's last daytime
+   gap). Faithful to libsceneauto HI_SCENE_SetAeWeightTab: Get->patch
+   au8Weight[15][17]->Set, nothing else touched (no unKey bit gates this). */
+static void apply_ae_weight(const scene_params_t *p)
+{
+    if (!p->ae_weight_present)
+        return;
+
+    ISP_STATISTICS_CFG_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetStatisticsConfig(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetStatisticsConfig failed 0x%x", (unsigned)ret);
+        return;
+    }
+
+    memcpy(attr.stAECfg.au8Weight, p->ae_weight, sizeof(attr.stAECfg.au8Weight));
+
+    ret = HI_MPI_ISP_SetStatisticsConfig(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetStatisticsConfig failed 0x%x", (unsigned)ret);
+    else
+        LOGGER(LOGGER_LEVEL_INFO, "[scene] AE weight table applied, center=%u",
+               p->ae_weight[7][8]);
+}
+
 /* Dynamic linear DRC — the original modulates the DRC strength per-ISO at
    runtime ([dynamic_linear_drc]); without it our fixed static strength (512)
    over-brightens in daylight (low ISO), washing the image and degrading IVP
@@ -1014,8 +1151,10 @@ static void *scene_dyn_thread(void *arg)
         const scene_params_t *p = g_active;
         if (p) {
             ISP_EXP_INFO_S exp;
-            if (HI_MPI_ISP_QueryExposureInfo(0, &exp) == HI_SUCCESS)
+            if (HI_MPI_ISP_QueryExposureInfo(0, &exp) == HI_SUCCESS) {
                 apply_dynamic_drc(p, exp.u32ISO);
+                apply_dynamic_dehaze(p, exp.u32Exposure);
+            }
         }
         sleep(1);
     }
@@ -1025,12 +1164,13 @@ static void *scene_dyn_thread(void *arg)
 static void apply_scene(const scene_params_t *p)
 {
     apply_ae(p);
+    apply_ae_weight(p);
     apply_awb(p);
     apply_ccm(p);
     apply_saturation(p);
     apply_nr(p);
     apply_gamma();
-    apply_dehaze();
+    apply_dehaze(p);
     apply_ca(p);
     apply_ldci(p);
     apply_dpc(p);

@@ -37,7 +37,13 @@
 #define MJSXJ02HL_NIGHT_ISO  3000     /* ISO above this → dark → night candidate */
 #define MJSXJ02HL_DAY_ISO    2000     /* ISO below this → lit  → day candidate   */
 #define MJSXJ02HL_HYSTERESIS    3     /* consecutive samples required for transition */
-#define MJSXJ02HL_SETTLE_S     15     /* seconds to skip sampling after transition */
+/* Settle time after a transition, before re-evaluating. RE of liblocalsdk.so
+ * (photo_sensitive_execute/interfere_control, Ghidra) shows the original polls
+ * its day/night state machine every ~430ms (13 x 33ms platform_thread ticks)
+ * and settles for ~7 ticks (~3s) plus one embedded usleep(220ms) before it will
+ * consider another transition — nowhere near our old 15s. Our poll is 1s
+ * (night_light_thread), so 3s here is the equivalent settle window. */
+#define MJSXJ02HL_SETTLE_S      3     /* seconds to skip sampling after transition */
 
 #define MJSXJ02HL_SCENE_DAY   "/usr/app/local/sensor.ini/config_product_scene_1080p20_linear.ini"
 #define MJSXJ02HL_SCENE_NIGHT "/usr/app/local/sensor.ini/config_product_scene_1080p20_linear_ir.ini"
