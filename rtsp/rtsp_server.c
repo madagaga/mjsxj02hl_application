@@ -102,6 +102,7 @@ static int       g_listen_fd = -1;
 static int       g_rtp_fd = -1;          // UDP, shared by every client
 static int       g_rtcp_fd = -1;
 static uint16_t  g_rtp_port = 0;
+static bool      g_udp_blocked = false;  // RTP socket full: wait for POLLOUT
 static int       g_wake_fd[2] = { -1, -1 };
 static volatile int g_wake_pending = 0;
 static volatile int g_playing = 0;       // clients currently playing
@@ -377,9 +378,12 @@ static bool pump_tcp(client_t *c, track_t *t, rtsp_stream_t *s) {
     return result;
 }
 
-// UDP: a packet the socket refuses is dropped and video resyncs
-static void pump_udp(track_t *t, rtsp_stream_t *s) {
+// UDP: a full socket buffer (EAGAIN, e.g. during an IDR burst) keeps the
+// packet for the next POLLOUT; only a real send error drops it (and video
+// then resyncs). Returns false when the socket is full.
+static bool pump_udp(track_t *t, rtsp_stream_t *s) {
     packet_t pkt;
+    bool writable = true;
     pthread_mutex_lock(&s->lock);
     track_resync(t, s);
     while (packet_build(t, s, &pkt)) {
@@ -394,6 +398,10 @@ static void pump_udp(track_t *t, rtsp_stream_t *s) {
         msg.msg_iov = iov;
         msg.msg_iovlen = 2;
         ssize_t n = sendmsg(g_rtp_fd, &msg, MSG_NOSIGNAL);
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS || errno == EINTR)) {
+            writable = false;
+            break;
+        }
         packet_commit(t, &pkt);
         if (n < 0) {
             if (s->codec != RTSP_CODEC_PCMA) t->wait_key = true;
@@ -401,6 +409,7 @@ static void pump_udp(track_t *t, rtsp_stream_t *s) {
         }
     }
     pthread_mutex_unlock(&s->lock);
+    return writable;
 }
 
 static void pump(client_t *c) {
@@ -418,7 +427,8 @@ static void pump(client_t *c) {
                 return;
             }
         } else {
-            pump_udp(t, &sess->stream[i]);
+            if (g_udp_blocked) return;
+            if (!pump_udp(t, &sess->stream[i])) g_udp_blocked = true;
         }
     }
 }
@@ -975,6 +985,7 @@ static void *server_thread(void *arg) {
         fds[n].fd = g_listen_fd; fds[n].events = POLLIN; map[n++] = -1;
         fds[n].fd = g_wake_fd[0]; fds[n].events = POLLIN; map[n++] = -2;
         if (g_rtcp_fd >= 0) { fds[n].fd = g_rtcp_fd; fds[n].events = POLLIN; map[n++] = -3; }
+        if (g_udp_blocked) { fds[n].fd = g_rtp_fd; fds[n].events = POLLOUT; map[n++] = -4; }
         for (int i = 0; i < RTSP_SERVER_MAX_CLIENTS; i++) {
             client_t *c = &g_clients[i];
             if (!c->used) continue;
@@ -993,6 +1004,7 @@ static void *server_thread(void *arg) {
                 while (read(g_wake_fd[0], drain, sizeof(drain)) > 0) {}
                 __sync_lock_release(&g_wake_pending);
             } else if (map[k] == -3) read_rtcp();
+            else if (map[k] == -4) g_udp_blocked = false;
             else {
                 client_t *c = &g_clients[map[k]];
                 if (!c->used) continue;
@@ -1034,6 +1046,9 @@ static void open_udp(void) {
         if (rtp < 0) continue;
         int rtcp = udp_socket(port + 1);
         if (rtcp < 0) { close(rtp); continue; }
+        // Room for a 1080p IDR burst; packets beyond wait for POLLOUT
+        int sndbuf = 128 * 1024;
+        setsockopt(rtp, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
         g_rtp_fd = rtp;
         g_rtcp_fd = rtcp;
         g_rtp_port = port;
