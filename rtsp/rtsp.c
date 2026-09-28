@@ -63,10 +63,6 @@ bool rtsp_init() {
                 continue;
             }
             bool primary = (channel == LOCALSDK_VIDEO_PRIMARY_CHANNEL);
-            if (primary ? APP_CFG.rtsp.primary_multicast : APP_CFG.rtsp.secondary_multicast) {
-                LOGGER(LOGGER_LEVEL_WARNING, "RTSP multicast is not supported yet, %s channel serves unicast only.",
-                       primary ? "primary" : "secondary");
-            }
             rtsp_session_config_t *s = &sessions[count];
             s->name = primary ? APP_CFG.rtsp.primary_name : APP_CFG.rtsp.secondary_name;
             s->video = video_codec(primary ? APP_CFG.video.primary_type : APP_CFG.video.secondary_type);

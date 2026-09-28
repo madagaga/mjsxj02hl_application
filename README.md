@@ -157,10 +157,6 @@ username =                     ; Username (empty for disable)
 password =                     ; Password
 primary_name = primary         ; Name of the primary channel
 secondary_name = secondary     ; Name of the secondary channel
-primary_multicast = false      ; Use multicast for primary channel
-secondary_multicast = false    ; Use multicast for secondary channel
-primary_split_vframes = true   ; Split video frames into separate packets for primary channel
-secondary_split_vframes = true ; Split video frames into separate packets for secondary channel
 
 [mqtt]
 enable = false                 ; Enable MQTT client

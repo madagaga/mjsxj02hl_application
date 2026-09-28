@@ -80,10 +80,6 @@ typedef struct {
         char *password;
         char *primary_name;
         char *secondary_name;
-        bool primary_multicast;
-        bool secondary_multicast;
-        bool primary_split_vframes;
-        bool secondary_split_vframes;
     } rtsp;
     
     // [mqtt]
