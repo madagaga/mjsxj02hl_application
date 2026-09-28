@@ -7,7 +7,7 @@ LDPATH = /opt/hisi-linux/x86-arm/arm-himix100-linux/target/usr/app/lib
 CC  = $(CROSS_COMPILE)gcc
 CXX = $(CROSS_COMPILE)g++
 
-LDFLAGS = -Wl,--gc-sections -pthread -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lpaho-mqtt3c -lrtspserver -lstdc++
+LDFLAGS = -Wl,--gc-sections -pthread -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lrtspserver -lstdc++ -ldl -lrt
 
 # yyjson is linked statically, trimmed to what we use (small MQTT objects, one
 # parsed command): no JSON pointer/patch utils, no incremental reader, no
@@ -16,6 +16,13 @@ LDFLAGS = -Wl,--gc-sections -pthread -l_hiae -livp -live -lmpi -lmd -l_hiawb -li
 YYJSON_FLAGS = -Os -ffunction-sections -fdata-sections \
 	-DYYJSON_DISABLE_UTILS=1 -DYYJSON_DISABLE_INCR_READER=1 \
 	-DYYJSON_DISABLE_NON_STANDARD=1 -DYYJSON_DISABLE_FAST_FP_CONV=1
+
+# paho (synchronous MQTTClient, no SSL) is linked statically as well.
+# HIGH_PERFORMANCE drops paho's tracing and its heap tracking, which records
+# every allocation in a tree (we use neither). Its system deps (dl, rt) are
+# added to LDFLAGS since a static archive does not carry them.
+PAHO_FLAGS = -DPAHO_BUILD_SHARED=FALSE -DPAHO_BUILD_STATIC=TRUE \
+	-DPAHO_HIGH_PERFORMANCE=TRUE -DPAHO_ENABLE_TESTING=FALSE -DPAHO_ENABLE_CPACK=FALSE
 
 OUTPUT = ./bin
 LIBDIR = ./lib
@@ -68,8 +75,8 @@ update-libs:
 	git pull --recurse-submodules
 	git submodule update --remote --recursive
 
-static-libs: libipchw.a
-shared-libs: libpaho-mqtt3c.so librtspserver.so
+static-libs: libipchw.a libpaho-mqtt3c.a
+shared-libs: librtspserver.so
 
 install-libs:
 	-cp -arf $(LIBDIR)/. $(LDPATH)
@@ -80,10 +87,10 @@ libipchw.a:
 	cp -f $(OUTPUT)/objects/ipctool/libipchw.a $(OUTPUT)/objects/
 	cp -f $(OUTPUT)/objects/ipctool/ipctool $(OUTPUT)/
 
-libpaho-mqtt3c.so:
-	cmake -S./mqtt/paho.mqtt.c -B$(OUTPUT)/objects/paho.mqtt.c -DCMAKE_C_COMPILER=$(CC) -DCMAKE_C_FLAGS="$(CCFLAGS)"
-	make -C $(OUTPUT)/objects/paho.mqtt.c
-	cp -fP $(OUTPUT)/objects/paho.mqtt.c/src/libpaho-mqtt3c.so* $(LIBDIR)/
+libpaho-mqtt3c.a:
+	cmake -S./mqtt/paho.mqtt.c -B$(OUTPUT)/objects/paho.mqtt.c -DCMAKE_C_COMPILER=$(CC) -DCMAKE_C_FLAGS="$(CCFLAGS) -Os -ffunction-sections -fdata-sections" $(PAHO_FLAGS)
+	make -C $(OUTPUT)/objects/paho.mqtt.c paho-mqtt3c-static
+	cp -f $(OUTPUT)/objects/paho.mqtt.c/src/libpaho-mqtt3c.a $(OUTPUT)/objects/
 
 librtspserver.so:
 	make -C ./rtsp

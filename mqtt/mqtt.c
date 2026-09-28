@@ -262,8 +262,12 @@ static void *mqtt_periodical(void *arg) {
         else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "yyjson_mut_obj_add_str(ip_address)");
         // Temperature
         float hw_temp = gethwtemp();
-        if(yyjson_mut_obj_add_real(json_doc, json_root, "hw_temp", hw_temp)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "yyjson_mut_obj_add_real(hw_temp)");
-        else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "yyjson_mut_obj_add_real(hw_temp)");
+        // One decimal: without yyjson fast float conversion, the shortest form
+        // would come out as a 17-digit %g (67.932334899902344)
+        yyjson_mut_val *json_hw_temp = yyjson_mut_real(json_doc, hw_temp);
+        yyjson_mut_set_fp_to_fixed(json_hw_temp, 1);
+        if(yyjson_mut_obj_add_val(json_doc, json_root, "hw_temp", json_hw_temp)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "yyjson_mut_obj_add_val(hw_temp)");
+        else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "yyjson_mut_obj_add_val(hw_temp)");
         // RAM
         unsigned long total_ram = 0;
         unsigned long free_ram = 0;
