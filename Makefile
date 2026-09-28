@@ -7,7 +7,15 @@ LDPATH = /opt/hisi-linux/x86-arm/arm-himix100-linux/target/usr/app/lib
 CC  = $(CROSS_COMPILE)gcc
 CXX = $(CROSS_COMPILE)g++
 
-LDFLAGS = -pthread -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lpaho-mqtt3c -lyyjson -lrtspserver -lstdc++
+LDFLAGS = -Wl,--gc-sections -pthread -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lpaho-mqtt3c -lrtspserver -lstdc++
+
+# yyjson is linked statically, trimmed to what we use (small MQTT objects, one
+# parsed command): no JSON pointer/patch utils, no incremental reader, no
+# non-standard JSON, no fast float tables (~95 KB; the few floats go through
+# snprintf/strtod). Sections let --gc-sections drop the unused functions.
+YYJSON_FLAGS = -Os -ffunction-sections -fdata-sections \
+	-DYYJSON_DISABLE_UTILS=1 -DYYJSON_DISABLE_INCR_READER=1 \
+	-DYYJSON_DISABLE_NON_STANDARD=1 -DYYJSON_DISABLE_FAST_FP_CONV=1
 
 OUTPUT = ./bin
 LIBDIR = ./lib
@@ -46,14 +54,12 @@ endif
 clean-libs:
 	-make clean OUTPUT="../$(OUTPUT)" LIBDIR="../$(LIBDIR)" -C ./rtsp
 	-make clean -C $(OUTPUT)/objects/paho.mqtt.c
-	-make clean -C $(OUTPUT)/objects/yyjson
 	-make clean -C $(OUTPUT)/objects/ipctool ; rm -f $(OUTPUT)/ipctool
 	-rm -rf $(LIBDIR)/*
 
 mkdir-libs:
 	-mkdir -p $(LIBDIR)
 	-mkdir -p $(OUTPUT)/objects/ipctool
-	-mkdir -p $(OUTPUT)/objects/yyjson
 	-mkdir -p $(OUTPUT)/objects/paho.mqtt.c
 	-make BUILD_DIR OUTPUT="../$(OUTPUT)" LIBDIR="../$(LIBDIR)" -C ./rtsp
 
@@ -63,7 +69,7 @@ update-libs:
 	git submodule update --remote --recursive
 
 static-libs: libipchw.a
-shared-libs: libyyjson.so libpaho-mqtt3c.so librtspserver.so
+shared-libs: libpaho-mqtt3c.so librtspserver.so
 
 install-libs:
 	-cp -arf $(LIBDIR)/. $(LDPATH)
@@ -73,11 +79,6 @@ libipchw.a:
 	make -C $(OUTPUT)/objects/ipctool ipchw ipctool
 	cp -f $(OUTPUT)/objects/ipctool/libipchw.a $(OUTPUT)/objects/
 	cp -f $(OUTPUT)/objects/ipctool/ipctool $(OUTPUT)/
-
-libyyjson.so:
-	cmake -S./yyjson -B$(OUTPUT)/objects/yyjson -DCMAKE_C_COMPILER=$(CC) -DCMAKE_C_FLAGS="$(CCFLAGS)" -DBUILD_SHARED_LIBS=ON
-	make -C $(OUTPUT)/objects/yyjson
-	cp -fP $(OUTPUT)/objects/yyjson/libyyjson.so* $(LIBDIR)/
 
 libpaho-mqtt3c.so:
 	cmake -S./mqtt/paho.mqtt.c -B$(OUTPUT)/objects/paho.mqtt.c -DCMAKE_C_COMPILER=$(CC) -DCMAKE_C_FLAGS="$(CCFLAGS)"
@@ -91,7 +92,7 @@ librtspserver.so:
 # APPLICATION OBJECTS #
 #######################
 
-objects: logger.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o sensor.o board.o jxf22_cmos.o jxf22_ctl.o scene.o
+objects: logger.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o sensor.o board.o jxf22_cmos.o jxf22_ctl.o scene.o yyjson.o
 
 logger.o: ./logger/logger.c
 	$(CC) $(CCFLAGS) -c ./logger/logger.c -o $(OUTPUT)/objects/logger.o
@@ -101,6 +102,9 @@ configs.o: ./configs/configs.c
 
 inih.o: ./configs/inih/ini.c
 	$(CC) $(CCFLAGS) -c ./configs/inih/ini.c -o $(OUTPUT)/objects/inih.o
+
+yyjson.o: ./yyjson/src/yyjson.c
+	$(CC) $(CCFLAGS) $(YYJSON_FLAGS) -c ./yyjson/src/yyjson.c -o $(OUTPUT)/objects/yyjson.o
 
 init.o: ./localsdk/init.c
 	$(CC) $(CCFLAGS) -c ./localsdk/init.c -o $(OUTPUT)/objects/init.o
