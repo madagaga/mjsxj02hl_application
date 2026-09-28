@@ -236,11 +236,19 @@ bool speaker_set_volume(int value)
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
     bool result = true;
 
-    LOGGER(LOGGER_LEVEL_INFO, "Volume: %d", value);
-    if (result &= (HI_MPI_AO_SetVolume(audio_get_ao_dev(), value) == HI_SUCCESS)) {
+    /* HI_MPI_AO_SetVolume takes a gain in dB ([-121, 6]), not a percentage:
+       same mapping as the vendor liblocalsdk.so (local_sdk_speaker_set_volume),
+       volume * 6 / 7 - 58 clamped to [0, 5] dB */
+    int volume_db = value * 6 / 7 - 58;
+    if (volume_db > 5) volume_db = 5;
+    if (volume_db < 0) volume_db = 0;
+
+    LOGGER(LOGGER_LEVEL_INFO, "Volume: %d (%d dB)", value, volume_db);
+    HI_S32 ret = HI_MPI_AO_SetVolume(audio_get_ao_dev(), volume_db);
+    if (result &= (ret == HI_SUCCESS)) {
         LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "AO_SetVolume()");
         APP_CFG.speaker.volume = value;
-    } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "AO_SetVolume()");
+    } else LOGGER(LOGGER_LEVEL_ERROR, "AO_SetVolume(%d dB) error: 0x%x", volume_db, ret);
 
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed (result = %s).", (result ? "true" : "false"));
     return result;
