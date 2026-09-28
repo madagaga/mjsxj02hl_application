@@ -23,7 +23,7 @@ typedef struct {
     signed char *data;
     uint32_t size;
     uint32_t index;
-    uint32_t timestamp;
+    uint64_t timestamp;   /* PTS in microseconds (AUDIO_STREAM_S.u64TimeStamp) */
 } LOCALSDK_AUDIO_G711_FRAME_INFO;
 
 typedef struct {

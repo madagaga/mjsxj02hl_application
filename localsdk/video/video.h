@@ -43,7 +43,7 @@ typedef struct {
     signed char *data;
     uint32_t size;
     uint32_t index;
-    uint32_t timestamp;
+    uint64_t timestamp;   /* PTS in microseconds (VENC_PACK_S.u64PTS) */
     uint16_t offset;      /* Offset in buffer (from VENC_PACK_S.u32Offset) */
     uint16_t frame_end;   /* Frame end flag (from VENC_PACK_S.bFrameEnd) */
     uint16_t type;        /* Frame type (H264E_NALU_*, H265E_NALU_*) */

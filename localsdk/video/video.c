@@ -608,7 +608,7 @@ static void *sdk_video_run_thread(void *arg) {
                 LOCALSDK_H26X_FRAME_INFO fi = {
                     .data      = (signed char *)stStream.pstPack[i].pu8Addr,
                     .size      = stStream.pstPack[i].u32Len,
-                    .timestamp = (uint32_t)stStream.pstPack[i].u64PTS,
+                    .timestamp = stStream.pstPack[i].u64PTS,
                     .offset    = (uint16_t)stStream.pstPack[i].u32Offset,
                     .frame_end = (uint16_t)stStream.pstPack[i].bFrameEnd,
                     .type      = stStream.pstPack[i].DataType.enH264EType,
@@ -630,9 +630,10 @@ static void *sdk_video_run_thread(void *arg) {
    ============================================================================ */
 
 static int h26x_capture_callback(int chn, LOCALSDK_H26X_FRAME_INFO *frameInfo) {
-    if (frameInfo && frameInfo->size && rtsp_is_enabled(chn))
-        rtsp_media_frame(chn, frameInfo->data, frameInfo->size,
-                         frameInfo->timestamp, frameInfo->type);
+    /* Valid data starts u32Offset bytes into the pack */
+    if (frameInfo && frameInfo->size > frameInfo->offset && rtsp_is_enabled(chn))
+        rtsp_video_frame(chn, frameInfo->data + frameInfo->offset, frameInfo->size - frameInfo->offset,
+                         frameInfo->timestamp, frameInfo->frame_end);
     return LOCALSDK_OK;
 }
 
