@@ -7,6 +7,47 @@ Application for Xiaomi Smart Camera Standard Edition (MJSXJ02HL) with RTSP and M
 **Attention! This firmware is no longer supported by the author. We recommend using [OpenIPC](https://github.com/OpenIPC/device-mjsxj02hl).**
 
 
+## OSS `localsdk` rewrite — Roadmap
+
+This branch replaces the proprietary `liblocalsdk.so` (and the vendor blobs
+`libsceneauto.so` / `libsns_f22.so`) with an open-source C implementation on top of
+the Hisilicon MPP, so the application no longer depends on the original firmware's
+closed libraries.
+
+### Done
+
+- OSS reimplementation of the `local_sdk_*` API on the Hisilicon MPP — no vendor blobs.
+- Subsystems split into self-contained modules: video (VPSS + VENC), audio, speaker,
+  alarm (IVP humanoid + IVS motion detection), OSD, night.
+- Scene/ISP module replacing `libsceneauto.so`: day/night INI parsing and the full ISP
+  pipeline (AE/AWB/CCM, NR, demosaic, gamma, dehaze, DRC, sharpen, LDCI, DPC).
+- In-tree OSS JXF22 sensor driver replacing `libsns_f22.so`.
+- Board-centric platform layer: GPIO, IR / IR-cut, AE-ISO based day/night state machine.
+- VI pipeline on the SDK20190315 (3516Ev200) ABI, VPSS wrap + 3DNR, 180° orientation.
+- Day/night auto-switch, IR flood (PWM) and image rendering aligned to the original
+  firmware; ~24 h stability validated under a respawn watchdog.
+
+### To do
+
+- Night image: reduce noise/grain to match the original (per-ISO NR / demosaic + VPSS 3DNR).
+- Day/night switching: fix IR flapping at intermediate (dusk) light.
+- Daytime AE brightness alignment with the original.
+- Investigate the rare heap burst that can trigger an OOM kill (currently masked by the watchdog).
+- Replace the vendor boot loader `load3518ev300` (pinmux + module load) for full autonomy.
+- Local MP4 recording to SD card on motion / humanoid events.
+- Replace clear-text FTP/telnet with SSH (dropbear).
+- Day scene INI (`config_product_scene_1080p20_linear.ini`) `[static_dehaze] DehazeLut`
+  uses backslash line continuation without leading indentation; the vendored `inih`
+  (`configs/inih`, a git submodule of upstream `benhoyt/inih`) only recognizes an
+  indented continuation line, so this key currently fails to parse and the day dehaze
+  LUT stays all-zero. Fix pending a decision: either indent the continuation lines in
+  the INI file (lowest risk, touches only our own config data) or patch/fork `inih`
+  upstream. Not applied yet.
+- *Possible enhancement (not present in the original firmware):* IVP ROI masking to
+  exclude/focus zones for motion/humanoid detection (`hi_ivp_set_roi_attr` +
+  `hi_ivp_set_roi_map`) — mechanism confirmed by reverse-engineering, not wired up yet.
+
+
 ## Build
 
 1. Install Hi3518Ev300 [toolchain](https://dl.openipc.org/SDK/HiSilicon/Hi3516Ev200_16Ev300_18Ev300/Hi3516EV200R001C01SPC011/arm-himix100-linux.tgz):
@@ -116,10 +157,6 @@ username =                     ; Username (empty for disable)
 password =                     ; Password
 primary_name = primary         ; Name of the primary channel
 secondary_name = secondary     ; Name of the secondary channel
-primary_multicast = false      ; Use multicast for primary channel
-secondary_multicast = false    ; Use multicast for secondary channel
-primary_split_vframes = true   ; Split video frames into separate packets for primary channel
-secondary_split_vframes = true ; Split video frames into separate packets for secondary channel
 
 [mqtt]
 enable = false                 ; Enable MQTT client

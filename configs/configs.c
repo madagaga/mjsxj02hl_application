@@ -3,7 +3,8 @@
 
 #include "./configs.h"
 #include "./inih/ini.h"
-#include "./../localsdk/localsdk.h"
+#include "./../localsdk/video/video.h"    /* LOCALSDK_VIDEO_PAYLOAD_H264, LOCALSDK_VIDEO_RCMODE_* */
+#include "./../localsdk/speaker/speaker.h" /* LOCALSDK_SPEAKER_PCM_TYPE */
 #include "./../logger/logger.h"
 
 // Default values
@@ -67,10 +68,6 @@ APPLICATION_CONFIGURATION APP_CFG = {
     .rtsp.password                = "",                                     // Password
     .rtsp.primary_name            = "primary",                              // Name of the primary channel
     .rtsp.secondary_name          = "secondary",                            // Name of the secondary channel
-    .rtsp.primary_multicast       = false,                                  // Use multicast for primary channel
-    .rtsp.secondary_multicast     = false,                                  // Use multicast for secondary channel
-    .rtsp.primary_split_vframes   = true,                                   // Split video frames into separate packets for primary channel
-    .rtsp.secondary_split_vframes = true,                                   // Split video frames into separate packets for secondary channel
     
     // [mqtt]
     .mqtt.enable                  = false,                                  // Enable MQTT client
@@ -201,14 +198,13 @@ static int parser_handler(void* cfg, const char *section, const char *name, cons
         config->rtsp.primary_name = strdup(value);
     } else if(MATCH("rtsp", "secondary_name")) {
         config->rtsp.secondary_name = strdup(value);
+    // Obsolete [rtsp] keys, still accepted so that existing configuration
+    // files load cleanly: the server is unicast only and always splits
+    // encoder packs into NAL units
     } else if(MATCH("rtsp", "primary_multicast")) {
-        config->rtsp.primary_multicast = atob(value);
     } else if(MATCH("rtsp", "secondary_multicast")) {
-        config->rtsp.secondary_multicast = atob(value);
     } else if(MATCH("rtsp", "primary_split_vframes")) {
-        config->rtsp.primary_split_vframes = atob(value);
     } else if(MATCH("rtsp", "secondary_split_vframes")) {
-        config->rtsp.secondary_split_vframes = atob(value);
 
     // [mqtt]
     } else if(MATCH("mqtt", "enable")) {

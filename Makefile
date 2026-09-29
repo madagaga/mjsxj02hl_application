@@ -1,13 +1,28 @@
 SKIP_SHARED_LIBS = OFF
 
 CROSS_COMPILE = arm-himix100-linux-
-CCFLAGS = -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations
+CCFLAGS = -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations -I./include
 LDPATH = /opt/hisi-linux/x86-arm/arm-himix100-linux/target/usr/app/lib
 
 CC  = $(CROSS_COMPILE)gcc
 CXX = $(CROSS_COMPILE)g++
 
-LDFLAGS = -pthread -llocalsdk -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lsceneauto -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -lsns_f22 -lpaho-mqtt3c -lyyjson -lrtspserver -lstdc++
+LDFLAGS = -Wl,--gc-sections -pthread -l_hiae -livp -live -lmpi -lmd -l_hiawb -lisp -lsecurec -lVoiceEngine -lupvqe -l_hidehaze -l_hidrc -l_hildci -ldnvqe -ldl -lrt
+
+# yyjson is linked statically, trimmed to what we use (small MQTT objects, one
+# parsed command): no JSON pointer/patch utils, no incremental reader, no
+# non-standard JSON, no fast float tables (~95 KB; the few floats go through
+# snprintf/strtod). Sections let --gc-sections drop the unused functions.
+YYJSON_FLAGS = -Os -ffunction-sections -fdata-sections \
+	-DYYJSON_DISABLE_UTILS=1 -DYYJSON_DISABLE_INCR_READER=1 \
+	-DYYJSON_DISABLE_NON_STANDARD=1 -DYYJSON_DISABLE_FAST_FP_CONV=1
+
+# paho (synchronous MQTTClient, no SSL) is linked statically as well.
+# HIGH_PERFORMANCE drops paho's tracing and its heap tracking, which records
+# every allocation in a tree (we use neither). Its system deps (dl, rt) are
+# added to LDFLAGS since a static archive does not carry them.
+PAHO_FLAGS = -DPAHO_BUILD_SHARED=FALSE -DPAHO_BUILD_STATIC=TRUE \
+	-DPAHO_HIGH_PERFORMANCE=TRUE -DPAHO_ENABLE_TESTING=FALSE -DPAHO_ENABLE_CPACK=FALSE
 
 OUTPUT = ./bin
 LIBDIR = ./lib
@@ -19,7 +34,7 @@ LIBDIR = ./lib
 all: mkdirs mjsxj02hl
 
 mjsxj02hl: ./mjsxj02hl.c external-libs objects
-	$(CC) $(CCFLAGS) -L$(LDPATH) ./mjsxj02hl.c $(OUTPUT)/objects/*.o $(OUTPUT)/objects/*.a $(LDFLAGS) -o $(OUTPUT)/mjsxj02hl
+	$(CC) $(CCFLAGS) -L$(LDPATH) ./mjsxj02hl.c $(OUTPUT)/objects/*.o $(OUTPUT)/objects/*.a -o $(OUTPUT)/mjsxj02hl $(LDFLAGS)
 
 ##############
 # PVS-STUDIO #
@@ -44,26 +59,23 @@ external-libs: clean-libs mkdir-libs static-libs install-libs
 endif
 
 clean-libs:
-	-make clean OUTPUT="../$(OUTPUT)" LIBDIR="../$(LIBDIR)" -C ./rtsp
 	-make clean -C $(OUTPUT)/objects/paho.mqtt.c
-	-make clean -C $(OUTPUT)/objects/yyjson
 	-make clean -C $(OUTPUT)/objects/ipctool ; rm -f $(OUTPUT)/ipctool
 	-rm -rf $(LIBDIR)/*
 
 mkdir-libs:
 	-mkdir -p $(LIBDIR)
 	-mkdir -p $(OUTPUT)/objects/ipctool
-	-mkdir -p $(OUTPUT)/objects/yyjson
 	-mkdir -p $(OUTPUT)/objects/paho.mqtt.c
-	-make BUILD_DIR OUTPUT="../$(OUTPUT)" LIBDIR="../$(LIBDIR)" -C ./rtsp
 
 update-libs:
 	git submodule sync --recursive
 	git pull --recurse-submodules
 	git submodule update --remote --recursive
 
-static-libs: libipchw.a
-shared-libs: libyyjson.so libpaho-mqtt3c.so librtspserver.so
+static-libs: libipchw.a libpaho-mqtt3c.a
+# Nothing is shipped as a shared library any more (only the Hisi SDK and libc)
+shared-libs:
 
 install-libs:
 	-cp -arf $(LIBDIR)/. $(LDPATH)
@@ -74,24 +86,16 @@ libipchw.a:
 	cp -f $(OUTPUT)/objects/ipctool/libipchw.a $(OUTPUT)/objects/
 	cp -f $(OUTPUT)/objects/ipctool/ipctool $(OUTPUT)/
 
-libyyjson.so:
-	cmake -S./yyjson -B$(OUTPUT)/objects/yyjson -DCMAKE_C_COMPILER=$(CC) -DCMAKE_C_FLAGS="$(CCFLAGS)" -DBUILD_SHARED_LIBS=ON
-	make -C $(OUTPUT)/objects/yyjson
-	cp -fP $(OUTPUT)/objects/yyjson/libyyjson.so* $(LIBDIR)/
-
-libpaho-mqtt3c.so:
-	cmake -S./mqtt/paho.mqtt.c -B$(OUTPUT)/objects/paho.mqtt.c -DCMAKE_C_COMPILER=$(CC) -DCMAKE_C_FLAGS="$(CCFLAGS)"
-	make -C $(OUTPUT)/objects/paho.mqtt.c
-	cp -fP $(OUTPUT)/objects/paho.mqtt.c/src/libpaho-mqtt3c.so* $(LIBDIR)/
-
-librtspserver.so:
-	make -C ./rtsp
+libpaho-mqtt3c.a:
+	cmake -S./mqtt/paho.mqtt.c -B$(OUTPUT)/objects/paho.mqtt.c -DCMAKE_C_COMPILER=$(CC) -DCMAKE_C_FLAGS="$(CCFLAGS) -Os -ffunction-sections -fdata-sections" $(PAHO_FLAGS)
+	make -C $(OUTPUT)/objects/paho.mqtt.c paho-mqtt3c-static
+	cp -f $(OUTPUT)/objects/paho.mqtt.c/src/libpaho-mqtt3c.a $(OUTPUT)/objects/
 
 #######################
 # APPLICATION OBJECTS #
 #######################
 
-objects: logger.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o
+objects: logger.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o rtsp_server.o rtsp_stream.o rtsp_util.o sensor.o board.o jxf22_cmos.o jxf22_ctl.o scene.o yyjson.o
 
 logger.o: ./logger/logger.c
 	$(CC) $(CCFLAGS) -c ./logger/logger.c -o $(OUTPUT)/objects/logger.o
@@ -101,6 +105,9 @@ configs.o: ./configs/configs.c
 
 inih.o: ./configs/inih/ini.c
 	$(CC) $(CCFLAGS) -c ./configs/inih/ini.c -o $(OUTPUT)/objects/inih.o
+
+yyjson.o: ./yyjson/src/yyjson.c
+	$(CC) $(CCFLAGS) $(YYJSON_FLAGS) -c ./yyjson/src/yyjson.c -o $(OUTPUT)/objects/yyjson.o
 
 init.o: ./localsdk/init.c
 	$(CC) $(CCFLAGS) -c ./localsdk/init.c -o $(OUTPUT)/objects/init.o
@@ -131,6 +138,31 @@ homeassistant.o: ./mqtt/homeassistant.c
 
 rtsp.o: ./rtsp/rtsp.c
 	$(CC) $(CCFLAGS) -c ./rtsp/rtsp.c -o $(OUTPUT)/objects/rtsp.o
+
+# The RTSP server is self-contained; built optimized, it runs on every packet
+rtsp_server.o: ./rtsp/rtsp_server.c
+	$(CC) $(CCFLAGS) -O2 -Wall -c ./rtsp/rtsp_server.c -o $(OUTPUT)/objects/rtsp_server.o
+
+rtsp_stream.o: ./rtsp/rtsp_stream.c
+	$(CC) $(CCFLAGS) -O2 -Wall -c ./rtsp/rtsp_stream.c -o $(OUTPUT)/objects/rtsp_stream.o
+
+rtsp_util.o: ./rtsp/rtsp_util.c
+	$(CC) $(CCFLAGS) -O2 -Wall -c ./rtsp/rtsp_util.c -o $(OUTPUT)/objects/rtsp_util.o
+
+sensor.o: ./localsdk/sensor/jxf/sensor_jxf22.c
+	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/sensor_jxf22.c -o $(OUTPUT)/objects/sensor.o
+
+board.o: ./localsdk/platform/board_mjsxj02hl.c
+	$(CC) $(CCFLAGS) -c ./localsdk/platform/board_mjsxj02hl.c -o $(OUTPUT)/objects/board.o
+
+jxf22_cmos.o: ./localsdk/sensor/jxf/jxf22_cmos.c
+	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_cmos.c -o $(OUTPUT)/objects/jxf22_cmos.o
+
+jxf22_ctl.o: ./localsdk/sensor/jxf/jxf22_sensor_ctl.c
+	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_sensor_ctl.c -o $(OUTPUT)/objects/jxf22_ctl.o
+
+scene.o: ./localsdk/scene/scene.c
+	$(CC) $(CCFLAGS) -I./configs/inih -I./logger -c ./localsdk/scene/scene.c -o $(OUTPUT)/objects/scene.o
 
 clean:
 	-rm -rf $(OUTPUT)/*
