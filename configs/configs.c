@@ -19,10 +19,6 @@ APPLICATION_CONFIGURATION APP_CFG = {
     
     // [osd]
     .osd.enable                   = false,                                  // Enable On-Screen Display (OSD)
-    .osd.oemlogo                  = true,                                   // Display OEM logo (MI)
-    .osd.oemlogo_x                = 2,                                      // X position of the OEM logo
-    .osd.oemlogo_y                = 0,                                      // Y position of the OEM logo
-    .osd.oemlogo_size             = 0,                                      // Size of the OEM logo (can take negative values)
     .osd.datetime                 = true,                                   // Display date and time
     .osd.datetime_x               = 48,                                     // X position of the date and time
     .osd.datetime_y               = 0,                                      // Y position of the date and time
@@ -85,6 +81,11 @@ APPLICATION_CONFIGURATION APP_CFG = {
     // [night]
     .night.mode                   = 2,                                      // Night mode (0 = off, 1 = on, 2 = auto)
     .night.gray                   = 2,                                      // Grayscale (0 = off, 1 = on, 2 = auto)
+
+    // [paths]
+    .paths.scene_day              = "/usr/app/local/sensor.ini/config_product_scene_1080p20_linear.ini",    // Day scene INI
+    .paths.scene_night            = "/usr/app/local/sensor.ini/config_product_scene_1080p20_linear_ir.ini", // Night (IR) scene INI
+    .paths.ivp_model              = "/usr/app/local/ivp_re_im_allday_16chn_pr1_640x360_v1040.oms",          // IVP .oms model
 };
 
 // Handler for ini parser
@@ -110,14 +111,12 @@ static int parser_handler(void* cfg, const char *section, const char *name, cons
     // [osd]
     } else if(MATCH("osd", "enable")) {
         config->osd.enable = atob(value);
+    // Obsolete [osd] keys, still accepted so that existing configuration
+    // files load cleanly: the OEM logo is not supported
     } else if(MATCH("osd", "oemlogo")) {
-        config->osd.oemlogo = atob(value);
     } else if(MATCH("osd", "oemlogo_x")) {
-        config->osd.oemlogo_x = atoi(value);
     } else if(MATCH("osd", "oemlogo_y")) {
-        config->osd.oemlogo_y = atoi(value);
     } else if(MATCH("osd", "oemlogo_size")) {
-        config->osd.oemlogo_size = atoi(value);
     } else if(MATCH("osd", "datetime")) {
         config->osd.datetime = atob(value);
     } else if(MATCH("osd", "datetime_x")) {
@@ -235,6 +234,14 @@ static int parser_handler(void* cfg, const char *section, const char *name, cons
         config->night.mode = atoi(value);
     } else if(MATCH("night", "gray")) {
         config->night.gray = atoi(value);
+
+    // [paths]
+    } else if(MATCH("paths", "scene_day")) {
+        config->paths.scene_day = strdup(value);
+    } else if(MATCH("paths", "scene_night")) {
+        config->paths.scene_night = strdup(value);
+    } else if(MATCH("paths", "ivp_model")) {
+        config->paths.ivp_model = strdup(value);
 
     // unknown
     } else result &= false;

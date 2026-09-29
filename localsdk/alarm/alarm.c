@@ -258,6 +258,8 @@ static int32_t ivp_mpp_init(int32_t width, int32_t height, const char *oms_file)
     (void)width; (void)height;
     if (g_ivpInitialized) return LOCALSDK_OK;
 
+    if (!oms_file && APP_CFG.paths.ivp_model && APP_CFG.paths.ivp_model[0])
+        oms_file = APP_CFG.paths.ivp_model;
     if (!oms_file) {
         const board_cfg_t *board = platform_get_board_cfg();
         oms_file = board ? board->ivp_oms_path : NULL;

@@ -690,8 +690,8 @@ static void apply_ccm(const scene_params_t *p)
  *   2. ISP_CSC_ATTR_S.u8Satu                   — global CSC saturation (0-100)
  * If either is zero the output is grayscale.
  *
- * night.c manages (2) only when APP_CFG.night.gray==2.  We manage both here
- * so that day/night color state is consistent regardless of the gray setting.
+ * (1) comes from the scene INI; (2) keeps the ISP default in day and is forced
+ * to 0 in night, see below.
  */
 static void apply_saturation(const scene_params_t *p)
 {
@@ -713,27 +713,33 @@ static void apply_saturation(const scene_params_t *p)
     LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetSaturationAttr sat[0]=%u grayscale=%d ret=0x%x",
            p->sat[0], grayscale, (unsigned)ret);
 
-    /* Align the CSC-level saturation: day=100, night=0. */
+    /* CSC-level saturation. The stock scene never touches the CSC in day
+     * (bStaticCSC=0, [static_csc] Enable=0), so day must keep the ISP default
+     * (u8Satu=50 is the neutral point, 100 doubles the chroma). Only night
+     * forces u8Satu=0 (grayscale, redundant with the all-zero sat curve).
+     * The ISP default is captured on the first call and restored for day. */
+    static ISP_CSC_ATTR_S csc_default;
+    static int            csc_default_valid = 0;
     ISP_CSC_ATTR_S csc;
     ret = HI_MPI_ISP_GetCSCAttr(0, &csc);
     if (ret != HI_SUCCESS) {
         LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetCSCAttr failed 0x%x", (unsigned)ret);
         return;
     }
-    LOGGER(LOGGER_LEVEL_INFO,
-           "[scene] CSC before: en=%d luma=%u contr=%u hue=%u satu=%u limitedRange=%d",
-           (int)csc.bEnable, csc.u8Luma, csc.u8Contr, csc.u8Hue, csc.u8Satu,
-           (int)csc.bLimitedRangeEn);
+    if (!csc_default_valid) {
+        csc_default       = csc;
+        csc_default_valid = 1;
+        LOGGER(LOGGER_LEVEL_INFO,
+               "[scene] CSC default: en=%d luma=%u contr=%u hue=%u satu=%u limitedRange=%d",
+               (int)csc.bEnable, csc.u8Luma, csc.u8Contr, csc.u8Hue, csc.u8Satu,
+               (int)csc.bLimitedRangeEn);
+    }
 
-    csc.u8Satu = grayscale ? 0 : 100;
-    /* Force full-range output (0-255). Our highlights capped at ~223 (never
-       reaching white) while the stock image clips at 255 — the symptom of a
-       limited-range (16-235) CSC output. Full range is the natural default but
-       set it explicitly in case the ISP default came up limited. */
-    csc.bLimitedRangeEn = HI_FALSE;
+    csc = csc_default;
+    if (grayscale) csc.u8Satu = 0;
     ret = HI_MPI_ISP_SetCSCAttr(0, &csc);
-    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetCSCAttr u8Satu=%u limitedRange=0 ret=0x%x",
-           csc.u8Satu, (unsigned)ret);
+    LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetCSCAttr u8Satu=%u limitedRange=%d ret=0x%x",
+           csc.u8Satu, (int)csc.bLimitedRangeEn, (unsigned)ret);
 }
 
 static void apply_nr(const scene_params_t *p)

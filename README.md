@@ -9,30 +9,23 @@ Application for Xiaomi Smart Camera Standard Edition (MJSXJ02HL) with RTSP and M
 
 ## OSS `localsdk` rewrite — Roadmap
 
-This branch replaces the proprietary `liblocalsdk.so` (and the vendor blobs
+The `dev` branch replaces the proprietary `liblocalsdk.so` (and the vendor blobs
 `libsceneauto.so` / `libsns_f22.so`) with an open-source C implementation on top of
 the Hisilicon MPP, so the application no longer depends on the original firmware's
 closed libraries.
 
 ### Done
 
-- OSS reimplementation of the `local_sdk_*` API on the Hisilicon MPP — no vendor blobs.
-- Subsystems split into self-contained modules: video (VPSS + VENC), audio, speaker,
-  alarm (IVP humanoid + IVS motion detection), OSD, night.
-- Scene/ISP module replacing `libsceneauto.so`: day/night INI parsing and the full ISP
-  pipeline (AE/AWB/CCM, NR, demosaic, gamma, dehaze, DRC, sharpen, LDCI, DPC).
-- In-tree OSS JXF22 sensor driver replacing `libsns_f22.so`.
-- Board-centric platform layer: GPIO, IR / IR-cut, AE-ISO based day/night state machine.
-- VI pipeline on the SDK20190315 (3516Ev200) ABI, VPSS wrap + 3DNR, 180° orientation.
-- Day/night auto-switch, IR flood (PWM) and image rendering aligned to the original
-  firmware; ~24 h stability validated under a respawn watchdog.
+- OSS reimplementation of the `local_sdk_*` API on the Hisilicon MPP — no vendor blobs. 
+- C RTSP server (no more C++ / `librtspserver.so`) and a self-contained binary: no shared
+  library shipped besides the Hisilicon SDK and uClibc.
+- Configurable paths (`[paths]`: day/night scene INI, IVP `.oms` model); 
 
 ### To do
 
-- Night image: reduce noise/grain to match the original (per-ISO NR / demosaic + VPSS 3DNR).
-- Day/night switching: fix IR flapping at intermediate (dusk) light.
-- Daytime AE brightness alignment with the original.
 - Investigate the rare heap burst that can trigger an OOM kill (currently masked by the watchdog).
+- Watchdog: reboot after N failed restarts and reset the MPP state at startup, so that an
+  OOM kill cannot leave the camera in a crash loop (VB/RGN left locked).
 - Replace the vendor boot loader `load3518ev300` (pinmux + module load) for full autonomy.
 - Local MP4 recording to SD card on motion / humanoid events.
 - Replace clear-text FTP/telnet with SSH (dropbear).
@@ -108,10 +101,6 @@ file =                         ; Write log to file (empty for disable)
 
 [osd]
 enable = false                 ; Enable On-Screen Display (OSD)
-oemlogo = true                 ; Display OEM logo (MI)
-oemlogo_x = 2                  ; X position of the OEM logo
-oemlogo_y = 0                  ; Y position of the OEM logo
-oemlogo_size = 0               ; Size of the OEM logo (can take negative values)
 datetime = true                ; Display date and time
 datetime_x = 48                ; X position of the date and time
 datetime_y = 0                 ; Y position of the date and time
@@ -174,6 +163,11 @@ discovery = homeassistant      ; Discovery prefix (https://www.home-assistant.io
 [night]
 mode = 2                       ; Night mode (0 = off, 1 = on, 2 = auto)
 gray = 2                       ; Grayscale (0 = off, 1 = on, 2 = auto)
+
+[paths]
+scene_day = /usr/app/local/sensor.ini/config_product_scene_1080p20_linear.ini       ; Day scene INI
+scene_night = /usr/app/local/sensor.ini/config_product_scene_1080p20_linear_ir.ini  ; Night (IR) scene INI
+ivp_model = /usr/app/local/ivp_re_im_allday_16chn_pr1_640x360_v1040.oms             ; IVP .oms model
 ```
 
 ## Usage
@@ -197,6 +191,13 @@ Running without arguments starts the main thread of the application.
 Network URL: `rtsp://[<rtsp_user>:<rtsp_password>@]<ip-address>:<port>/<channel_name>`
 
 Example: `rtsp://192.168.1.18:554/primary` or `rtsp://user:password@192.168.1.18:554/secondary`
+
+The RTSP server is built into the application (no external library):
+
+* Video H.264 or H.265 (per channel, from `[video]`), audio G.711 A-law when enabled in `[audio]`.
+* Transport RTP over TCP (interleaved) or UDP unicast. Multicast is not supported.
+* Digest authentication when a username or password is set.
+* Up to 4 simultaneous clients. A new client starts on the latest key frame; a client that falls behind skips to the next key frame; a TCP client that reads nothing for 30 seconds is disconnected.
 
 ## MQTT
 
@@ -268,5 +269,6 @@ Field | Description
 * yyjson: https://github.com/ibireme/yyjson
 * inih: https://github.com/benhoyt/inih
 * paho.mqtt.c: https://github.com/eclipse/paho.mqtt.c
-* RtspServer: https://github.com/PHZ76/RtspServer
 * ipctool: https://github.com/OpenIPC/ipctool
+
+All of them are linked statically: apart from the HiSilicon SDK and the C library, the binary has no runtime dependency.

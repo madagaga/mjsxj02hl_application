@@ -25,6 +25,7 @@
 #include "../sensor/jxf/sensor_jxf22.h"
 #include "../scene/scene.h"
 #include "../../logger/logger.h"
+#include "../../configs/configs.h"
 
 /* Day/night detection uses the AE demand (ISO), NOT the metered output luma.
  * The stock firmware judges day/night from the AE exposure/gain (libsceneauto
@@ -388,7 +389,11 @@ static HI_S32 mjsxj02hl_init(void)
     board_ircut_close();                 /* pulse back to day (filter in) */
     LOGGER(LOGGER_LEVEL_INFO, "[board][mjsxj02hl] init: IR-cut boot seat cycle night→day (filter in)");
 
-    HI_S32 ret = scene_init(MJSXJ02HL_SCENE_DAY, MJSXJ02HL_SCENE_NIGHT, BOARD_TARGET_FPS);
+    const char *day_ini   = (APP_CFG.paths.scene_day   && APP_CFG.paths.scene_day[0])
+                          ? APP_CFG.paths.scene_day   : MJSXJ02HL_SCENE_DAY;
+    const char *night_ini = (APP_CFG.paths.scene_night && APP_CFG.paths.scene_night[0])
+                          ? APP_CFG.paths.scene_night : MJSXJ02HL_SCENE_NIGHT;
+    HI_S32 ret = scene_init(day_ini, night_ini, BOARD_TARGET_FPS);
     if (ret != 0) {
         LOGGER(LOGGER_LEVEL_ERROR, "[board][mjsxj02hl] scene_init failed (%d)", ret);
         return HI_FAILURE;

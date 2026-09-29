@@ -21,10 +21,6 @@ typedef struct {
     // [osd]
     struct {
         bool enable;
-        bool oemlogo;
-        int oemlogo_x;
-        int oemlogo_y;
-        int oemlogo_size;
         bool datetime;
         int datetime_x;
         int datetime_y;
@@ -102,7 +98,14 @@ typedef struct {
         int mode;
         int gray;
     } night;
-    
+
+    // [paths] (empty = board default)
+    struct {
+        char *scene_day;
+        char *scene_night;
+        char *ivp_model;
+    } paths;
+
 } APPLICATION_CONFIGURATION;
 
 // Global configuration variable

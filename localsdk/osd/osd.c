@@ -26,9 +26,6 @@ typedef struct {
     uint32_t    timestamp_show;
     RGN_HANDLE  timestamp_hdl;
     uint32_t    padding1;
-    uint32_t    logo_en;
-    uint32_t    logo_show;
-    RGN_HANDLE  logo_hdl;
     uint32_t    padding2[17];
     uint32_t    rects_en;
     uint32_t    rects_show;
@@ -180,24 +177,8 @@ static int osd_set_parameters(int chn, LOCALSDK_OSD_OPTIONS *options)
 
     memcpy(&params->opts, options, sizeof(LOCALSDK_OSD_OPTIONS));
     params->timestamp_en = 1;
-    params->logo_en      = 1;
     params->rects_en     = 1;
     return LOCALSDK_OK;
-}
-
-static int osd_update_logo(int chn, bool state)
-{
-    OSD_CHANNEL_PARAMS *params = osd_get_params(chn);
-    if (!params) return LOCALSDK_ERROR;
-
-    if (params->logo_hdl == 0) {
-        params->logo_hdl = chn * 3 + 1;
-        osd_region_init(params->logo_hdl, 128, 64);
-    }
-    /* Logo region is intentionally empty (no proprietary MI asset embedded). */
-    return osd_show_region(params->logo_hdl, chn,
-                           params->opts.oemlogo_x, params->opts.oemlogo_y,
-                           OSD_LAYER_LOGO, state);
 }
 
 static int osd_update_timestamp(int chn, bool state, struct tm *timestamp)
@@ -385,10 +366,6 @@ bool osd_init(void)
             .datetime_y       = APP_CFG.osd.datetime_y,
             .datetime_reduce  = (APP_CFG.osd.datetime_size < 0) ? (uint32_t)(abs(APP_CFG.osd.datetime_size) + 1) : 1u,
             .datetime_increase = (APP_CFG.osd.datetime_size > 0) ? (uint32_t)(APP_CFG.osd.datetime_size + 1) : 1u,
-            .oemlogo_x        = APP_CFG.osd.oemlogo_x,
-            .oemlogo_y        = APP_CFG.osd.oemlogo_y,
-            .oemlogo_reduce   = (APP_CFG.osd.oemlogo_size < 0) ? (uint32_t)(abs(APP_CFG.osd.oemlogo_size) + 1) : 1u,
-            .oemlogo_increase = (APP_CFG.osd.oemlogo_size > 0) ? (uint32_t)(APP_CFG.osd.oemlogo_size + 1) : 1u,
         };
         if (result &= (osd_set_parameters(LOCALSDK_VIDEO_PRIMARY_CHANNEL, &opts) == LOCALSDK_OK))
             LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "osd_set_parameters()");
@@ -413,13 +390,6 @@ bool osd_postinit(void)
     bool result = true;
 
     if (osd_is_enabled()) {
-        if (APP_CFG.osd.oemlogo) {
-            if (result &= (osd_update_logo(LOCALSDK_VIDEO_PRIMARY_CHANNEL, true) == LOCALSDK_OK))
-                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "osd_update_logo(true)");
-            else
-                LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "osd_update_logo(true)");
-        }
-
         if (APP_CFG.osd.datetime) {
             if (result &= (pthread_create(&datetime_thread, NULL, osd_datetime_timer, NULL) == 0))
                 LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "pthread_create(datetime_thread)");
@@ -439,13 +409,6 @@ bool osd_free(void)
     bool result = true;
 
     if (osd_is_enabled()) {
-        if (APP_CFG.osd.oemlogo) {
-            if (result &= (osd_update_logo(LOCALSDK_VIDEO_PRIMARY_CHANNEL, false) == LOCALSDK_OK))
-                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "osd_update_logo(false)");
-            else
-                LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "osd_update_logo(false)");
-        }
-
         if (APP_CFG.osd.datetime) {
             if (datetime_thread) {
                 if (result &= (pthread_cancel(datetime_thread) == 0))

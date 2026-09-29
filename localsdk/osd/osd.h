@@ -18,10 +18,6 @@ typedef struct {
     uint32_t datetime_y;
     uint32_t datetime_reduce;
     uint32_t datetime_increase;
-    uint32_t oemlogo_x;
-    uint32_t oemlogo_y;
-    uint32_t oemlogo_reduce;
-    uint32_t oemlogo_increase;
 } LOCALSDK_OSD_OPTIONS;
 
 typedef struct {
