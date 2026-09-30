@@ -147,6 +147,11 @@ typedef struct {
     HI_U8   dld_dark_gain_lmt_c[ISP_AUTO_ISO_STRENGTH_NUM];
     HI_U8   dld_contrast_ctrl[ISP_AUTO_ISO_STRENGTH_NUM];
     HI_U8   dld_detail_adjust[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_asymmetry[ISP_AUTO_ISO_STRENGTH_NUM];    /* asymmetry tone-curve params */
+    HI_U8   dld_second_pole[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_compress[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   dld_stretch[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_BOOL dld_curve_present;
 
     /* [static_drc] */
     HI_BOOL drc_enable;
@@ -495,6 +500,14 @@ static int scene_handler(void *user, const char *section,
             parse_u8_arr(v, p->dld_contrast_ctrl, ISP_AUTO_ISO_STRENGTH_NUM);
         else if (strcasecmp(name, "DetailAdjustFactor") == 0)
             parse_u8_arr(v, p->dld_detail_adjust, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "Asymmetry") == 0)
+            { parse_u8_arr(v, p->dld_asymmetry, ISP_AUTO_ISO_STRENGTH_NUM); p->dld_curve_present = HI_TRUE; }
+        else if (strcasecmp(name, "SecondPole") == 0)
+            parse_u8_arr(v, p->dld_second_pole, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "Compress") == 0)
+            parse_u8_arr(v, p->dld_compress, ISP_AUTO_ISO_STRENGTH_NUM);
+        else if (strcasecmp(name, "Stretch") == 0)
+            parse_u8_arr(v, p->dld_stretch, ISP_AUTO_ISO_STRENGTH_NUM);
 
     } else if (strcasecmp(section, "static_ldci") == 0) {
         p->ldci_present = HI_TRUE;
@@ -1143,6 +1156,17 @@ static void apply_dynamic_drc(const scene_params_t *p, HI_U32 iso)
         attr.u8DarkGainLmtC         = dld_interp_u8(p, p->dld_dark_gain_lmt_c, iso);
         attr.u8ContrastControl      = dld_interp_u8(p, p->dld_contrast_ctrl, iso);
         attr.s8DetailAdjustFactor   = (HI_S8)dld_interp_u8(p, p->dld_detail_adjust, iso);
+    }
+
+    /* Asymmetry tone-mapping curve (static_drc CurveSelect=0): the stock scene
+       sets its four parameters per ISO too (HI_SCENE_SetDynamicLinearDRC); we
+       used to leave the ISP defaults. FltScaleCoarse/Fine are not used by this
+       chip (Hi3559A/3519A only). */
+    if (p->dld_curve_present) {
+        attr.stAsymmetryCurve.u8Asymmetry  = dld_interp_u8(p, p->dld_asymmetry, iso);
+        attr.stAsymmetryCurve.u8SecondPole = dld_interp_u8(p, p->dld_second_pole, iso);
+        attr.stAsymmetryCurve.u8Compress   = dld_interp_u8(p, p->dld_compress, iso);
+        attr.stAsymmetryCurve.u8Stretch    = dld_interp_u8(p, p->dld_stretch, iso);
     }
 
     HI_MPI_ISP_SetDRCAttr(0, &attr);
