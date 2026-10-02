@@ -645,6 +645,41 @@ static int h26x_capture_secondary_channel(LOCALSDK_H26X_FRAME_INFO *frameInfo) {
     return h26x_capture_callback(LOCALSDK_VIDEO_SECONDARY_CHANNEL, frameInfo);
 }
 
+/* Stock localsdk (inner_set_default_vencModParam) runs the encoders in
+ * MiniBufMode: without it the drivers reject the reduced stream buffers of
+ * sdk_video_create_venc_channel (w*h/4 H264, w*h/2 H265) with ILLEGAL_PARAM.
+ * The setting is kernel-side (it outlives the process) and is only accepted
+ * while no VENC channel exists. */
+static void video_set_venc_mod_params(void) {
+    VENC_PARAM_MOD_S mod;
+
+    memset(&mod, 0, sizeof(mod));
+    mod.enVencModType = MODTYPE_H264E;
+    if (HI_MPI_VENC_GetModParam(&mod) == HI_SUCCESS) {
+        mod.stH264eModParam.u32H264eMiniBufMode = 1;
+        mod.stH264eModParam.u32H264ePowerSaveEn = 0;
+        if (HI_MPI_VENC_SetModParam(&mod) != HI_SUCCESS)
+            sdk_log("[sdk][video] SetModParam(H264E) failed\n");
+    }
+
+    memset(&mod, 0, sizeof(mod));
+    mod.enVencModType = MODTYPE_H265E;
+    if (HI_MPI_VENC_GetModParam(&mod) == HI_SUCCESS) {
+        mod.stH265eModParam.u32H265eMiniBufMode = 1;
+        mod.stH265eModParam.u32H265ePowerSaveEn = 0;
+        if (HI_MPI_VENC_SetModParam(&mod) != HI_SUCCESS)
+            sdk_log("[sdk][video] SetModParam(H265E) failed\n");
+    }
+
+    memset(&mod, 0, sizeof(mod));
+    mod.enVencModType = MODTYPE_JPEGE;
+    if (HI_MPI_VENC_GetModParam(&mod) == HI_SUCCESS) {
+        mod.stJpegeModParam.u32JpegeMiniBufMode = 1;
+        if (HI_MPI_VENC_SetModParam(&mod) != HI_SUCCESS)
+            sdk_log("[sdk][video] SetModParam(JPEGE) failed\n");
+    }
+}
+
 /* ============================================================================
    PUBLIC API
    ============================================================================ */
@@ -661,6 +696,9 @@ bool video_init(void) {
         LOGGER(LOGGER_LEVEL_ERROR, "video_sys_init() error!");
         return false;
     }
+
+    /* Encoder module params, before any VENC channel is created */
+    video_set_venc_mod_params();
 
     /* Sensor bring-up (MIPI + VI + ISP + fps + orientation) */
     if (!g_board_cfg->pfnBringupSensor) {
