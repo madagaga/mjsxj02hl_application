@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <pthread.h>
+#include <time.h>
 
 #include "platform.h"
 #include "mpi_vi.h"
@@ -35,8 +36,24 @@
  * lit room into ~46-56 (the 30-60 dead zone) and the camera stays stuck in
  * night. ISO reflects the actual light demand and does not collapse:
  * measured on the stock camera — lit room ISO~1086, dark room ISO~5025. */
-#define MJSXJ02HL_NIGHT_ISO  3000     /* ISO above this → dark → night candidate */
-#define MJSXJ02HL_DAY_ISO    2000     /* ISO below this → lit  → day candidate   */
+#define MJSXJ02HL_NIGHT_ISO  3000     /* day-mode ISO above this → dark → night candidate */
+/* Night→day threshold, evaluated on the ISO measured in NIGHT mode, i.e. with
+ * the IR flood on: the flood divides the ISO by ~4 for the same ambient light
+ * (measured on the camera at dusk: day ISO 7998/7501/8960 → night ISO 1985/
+ * 1991/2119, ratio 0.24-0.27). A threshold meant for the day-mode scale (the
+ * former 2000) sat right on the night-mode ISO and made the camera flap every
+ * ~14 s (day → ISO>3000 → night → ISO≈2000 → day …). The stock firmware uses
+ * a night→day / day→night EV ratio of 1.5e6 / 1e7 (decompiled
+ * photo_sensitive_day_control / night_control): 3000 / 6.7 ≈ 450. */
+#define MJSXJ02HL_DAY_ISO_IR  450     /* night-mode ISO below this → lit → day candidate */
+/* Anti-flap hold, after the stock firmware's "interfere" state
+ * (photo_sensitive_day_control: 3 day→night attempts within ~60 s, i.e. 0x8c
+ * ticks of 430 ms, switch to the interfere state, which stays up to ~1 h):
+ * if MJSXJ02HL_FLAP_COUNT day→night transitions happen within
+ * MJSXJ02HL_FLAP_WINDOW_S seconds, stay in night for MJSXJ02HL_FLAP_HOLD_S. */
+#define MJSXJ02HL_FLAP_COUNT      3
+#define MJSXJ02HL_FLAP_WINDOW_S  60
+#define MJSXJ02HL_FLAP_HOLD_S   600
 #define MJSXJ02HL_HYSTERESIS    3     /* consecutive samples required for transition */
 /* Settle time after a transition, before re-evaluating. RE of liblocalsdk.so
  * (photo_sensitive_execute/interfere_control, Ghidra) shows the original polls
@@ -62,6 +79,20 @@ static volatile int s_current_mode = 1; /* assume day at startup */
 static int s_consec_night = 0;
 static int s_consec_day   = 0;
 static int s_settling     = 0; /* remaining 1s ticks in settle period */
+
+/* Anti-flap: monotonic times (s) of the last day→night transitions (ring) and
+ * the end of the night hold. Same single writer as above. */
+static long s_night_t[MJSXJ02HL_FLAP_COUNT];
+static int  s_night_idx   = 0;
+static int  s_night_cnt   = 0;
+static long s_hold_until  = 0;
+
+static long mono_seconds(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)ts.tv_sec;
+}
 
 /* -------------------------------------------------------------------------
  * GPIO helpers
@@ -419,13 +450,15 @@ static void mjsxj02hl_on_luma(HI_U8 luma)
         return;
     HI_U32 iso = exp.u32ISO;
 
-    LOGGER(LOGGER_LEVEL_DEBUG, "[board][mjsxj02hl] iso=%u luma=%u mode=%s consec_n=%d consec_d=%d",
-           iso, luma, s_current_mode ? "day" : "night", s_consec_night, s_consec_day);
+    long now  = mono_seconds();
+    long hold = s_hold_until > now ? s_hold_until - now : 0;
+    LOGGER(LOGGER_LEVEL_DEBUG, "[board][mjsxj02hl] iso=%u luma=%u mode=%s consec_n=%d consec_d=%d hold=%lds",
+           iso, luma, s_current_mode ? "day" : "night", s_consec_night, s_consec_day, hold);
 
     if (iso > MJSXJ02HL_NIGHT_ISO) {          /* dark */
         s_consec_night++;
         s_consec_day = 0;
-    } else if (iso < MJSXJ02HL_DAY_ISO) {     /* lit */
+    } else if (iso < MJSXJ02HL_DAY_ISO_IR) {  /* lit (night-mode scale) */
         s_consec_day++;
         s_consec_night = 0;
     } else {                                   /* ambiguous gap */
@@ -436,9 +469,23 @@ static void mjsxj02hl_on_luma(HI_U8 luma)
     if (s_current_mode == 1 && s_consec_night >= MJSXJ02HL_HYSTERESIS) {
         s_consec_night = 0;
         s_settling     = MJSXJ02HL_SETTLE_S;
+        /* Record this day→night transition; the oldest slot is the next one
+         * to be overwritten once the ring is full. */
+        s_night_t[s_night_idx] = now;
+        s_night_idx = (s_night_idx + 1) % MJSXJ02HL_FLAP_COUNT;
+        if (s_night_cnt < MJSXJ02HL_FLAP_COUNT) s_night_cnt++;
+        if (s_night_cnt == MJSXJ02HL_FLAP_COUNT &&
+            now - s_night_t[s_night_idx] <= MJSXJ02HL_FLAP_WINDOW_S) {
+            s_hold_until = now + MJSXJ02HL_FLAP_HOLD_S;
+            LOGGER(LOGGER_LEVEL_WARNING,
+                   "[board][mjsxj02hl] day/night flapping (%d night switches in %lds): holding night for %ds",
+                   MJSXJ02HL_FLAP_COUNT, now - s_night_t[s_night_idx], MJSXJ02HL_FLAP_HOLD_S);
+        }
         board_apply_mode(HI_TRUE);
     } else if (s_current_mode == 0 && s_consec_day >= MJSXJ02HL_HYSTERESIS) {
         s_consec_day = 0;
+        if (now < s_hold_until)
+            return;                          /* anti-flap hold: stay in night */
         s_settling   = MJSXJ02HL_SETTLE_S;
         board_apply_mode(HI_FALSE);
     }
