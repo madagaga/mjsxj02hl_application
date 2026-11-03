@@ -41,6 +41,7 @@
 #include "logger.h"
 
 #include "scene.h"
+#include "scene_nr3.h"
 #include "gamma_jxf22.h"
 
 /* -------------------------------------------------------------------------
@@ -272,6 +273,9 @@ typedef struct {
     HI_U16  awbex_high_stop;
     HI_BOOL awbex_multi_ls_en;
     HI_U16  awbex_multi_ct_wt[AWB_MULTI_CT_NUM];
+
+    /* [static_3dnr] - per-ISO VPSS 3DNR tables (see scene_nr3.c). */
+    scene_nr3_t nr3;
 } scene_params_t;
 
 static scene_params_t g_day;
@@ -440,6 +444,9 @@ static int scene_handler(void *user, const char *section,
             if (remaining > 0)
                 p->dca_fill[idx] += parse_u16_arr(buf, p->dca_lut[idx] + p->dca_fill[idx], remaining);
         }
+
+    } else if (strcasecmp(section, "static_3dnr") == 0) {
+        nr3_parse_key(&p->nr3, name, (char *)v);
 
     } else if (strcasecmp(section, "static_awbex") == 0) {
         p->awbex_present = HI_TRUE;
@@ -1462,7 +1469,7 @@ static void apply_awbex(const scene_params_t *p)
 /* Last values seen by the dynamic setters; g_dyn_force makes the next pass
    re-apply everything (set after every static re-apply, since SetSceneMode
    resets what they patched). */
-static HI_U32 g_last_iso_nr, g_last_iso_ca, g_last_iso_blc;
+static HI_U32 g_last_iso_nr, g_last_iso_ca, g_last_iso_blc, g_last_iso_3dnr;
 static HI_U64 g_last_exp_ae;
 static volatile int g_dyn_force = 1;
 
@@ -1496,6 +1503,12 @@ static void run_dynamic(const scene_params_t *p)
     if (MOD_ON(p, DYN_BLC) && (force || iso != g_last_iso_blc)) {
         g_last_iso_blc = iso;
         apply_dynamic_blc(p, iso);
+    }
+    /* bDyanamic3DNR [sic]: the original calls it on every tick; the result only
+       depends on the ISO, so a change of ISO is enough. */
+    if (MOD_ON(p, DYN_3DNR) && (force || iso != g_last_iso_3dnr)) {
+        g_last_iso_3dnr = iso;
+        nr3_apply(&p->nr3, iso, MOD_ON(p, DEBUG));
     }
 }
 
@@ -1561,7 +1574,9 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
     memset(&g_day,   0, sizeof(g_day));
     memset(&g_night, 0, sizeof(g_night));
 
+    nr3_parse_begin();
     int ret = ini_parse(day_ini, scene_handler, &g_day);
+    nr3_parse_end(&g_day.nr3);
     if (ret < 0) {
         LOGGER(LOGGER_LEVEL_ERROR, "[scene] cannot open day INI %s (ret=%d)", day_ini, ret);
         return -1;
@@ -1569,7 +1584,9 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
     if (ret > 0)
         LOGGER(LOGGER_LEVEL_WARNING, "[scene] day INI %s: parse stopped at line %d (long value — ignored)", day_ini, ret);
 
+    nr3_parse_begin();
     ret = ini_parse(night_ini, scene_handler, &g_night);
+    nr3_parse_end(&g_night.nr3);
     if (ret < 0) {
         LOGGER(LOGGER_LEVEL_ERROR, "[scene] cannot open night INI %s (ret=%d)", night_ini, ret);
         return -1;
@@ -1586,7 +1603,8 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
                       MOD_ON(&g_day, DYN_DEHAZE) || MOD_ON(&g_night, DYN_DEHAZE) ||
                       MOD_ON(&g_day, DYN_AE) || MOD_ON(&g_night, DYN_AE) ||
                       MOD_ON(&g_day, DYN_NR) || MOD_ON(&g_night, DYN_NR) ||
-                      MOD_ON(&g_day, DYN_CA) || MOD_ON(&g_day, DYN_BLC))) {
+                      MOD_ON(&g_day, DYN_CA) || MOD_ON(&g_day, DYN_BLC) ||
+                      MOD_ON(&g_day, DYN_3DNR) || MOD_ON(&g_night, DYN_3DNR))) {
         g_dynRun = 1;
         if (pthread_create(&g_dynThread, NULL, scene_dyn_thread, NULL) != 0) {
             g_dynRun = 0;

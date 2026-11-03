@@ -95,7 +95,7 @@ libpaho-mqtt3c.a:
 # APPLICATION OBJECTS #
 #######################
 
-objects: logger.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o rtsp_server.o rtsp_stream.o rtsp_util.o sensor.o board.o jxf22_cmos.o jxf22_ctl.o scene.o yyjson.o
+objects: logger.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o rtsp_server.o rtsp_stream.o rtsp_util.o sensor.o board.o jxf22_cmos.o jxf22_ctl.o scene.o scene_nr3.o yyjson.o
 
 logger.o: ./logger/logger.c
 	$(CC) $(CCFLAGS) -c ./logger/logger.c -o $(OUTPUT)/objects/logger.o
@@ -161,8 +161,11 @@ jxf22_cmos.o: ./localsdk/sensor/jxf/jxf22_cmos.c
 jxf22_ctl.o: ./localsdk/sensor/jxf/jxf22_sensor_ctl.c
 	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_sensor_ctl.c -o $(OUTPUT)/objects/jxf22_ctl.o
 
-scene.o: ./localsdk/scene/scene.c
+scene.o: ./localsdk/scene/scene.c ./localsdk/scene/scene_nr3.h
 	$(CC) $(CCFLAGS) -I./configs/inih -I./logger -c ./localsdk/scene/scene.c -o $(OUTPUT)/objects/scene.o
+
+scene_nr3.o: ./localsdk/scene/scene_nr3.c ./localsdk/scene/scene_nr3.h
+	$(CC) $(CCFLAGS) -I./logger -I./localsdk/scene -c ./localsdk/scene/scene_nr3.c -o $(OUTPUT)/objects/scene_nr3.o
 
 clean:
 	-rm -rf $(OUTPUT)/*
