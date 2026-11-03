@@ -184,46 +184,43 @@ static HI_U32 interp(HI_U32 x, HI_U32 xl, HI_U32 yl, HI_U32 xr, HI_U32 yr)
     return ((xr - x) * yl + (x - xl) * yr + (k >> 1)) / k;
 }
 
-#define I(f) ((HI_U16)interp(x, xl, a->f, xr, b->f))
-
-/* Blends rows a (lower) and b (upper) like HI_SCENE_SetDynamic3DNR: only the
-   fields the original interpolates; everything else stays from row a. */
+/* Blends rows a (lower) and b (upper) by ISO like libsceneauto.
+ *
+ * Measured on the original (camera .21, ISO 12242 between day rows 7 and 8):
+ * SFS2/SFS4, TFS0 (TFy[0], TFy[1]) and MATH0/MATH1 all equal the interpolated
+ * values, i.e. the vendor interpolates far more fields than the HiSilicon
+ * sample (which lists only IES/IEDZ, SFS/SFT/SBR 1-2-4, AdvMATH/AdvTH, NRc).
+ * Every field is therefore interpolated except the filter-selection indices
+ * (SFN0-2) and the reference/edge switches (bRef, TED), which stay those of the
+ * lower row; the other discrete fields (JMODE, kMode, TSI, TDX, MAI...) have
+ * the same value in every row of the shipped INIs, so the choice is moot for
+ * them. Which fields the vendor really copies is not fully verified. */
 static void nr3_blend(nr3_row_t *out, const nr3_row_t *a, const nr3_row_t *b, HI_U32 iso,
                       HI_U32 iso_l, HI_U32 iso_r)
 {
     HI_U32 x = map_iso(iso), xl = map_iso(iso_l), xr = map_iso(iso_r);
-    *out = *a;
+    nr3_row_t ta = *a, tb = *b, mask;
+    HI_U16 *pa[NR3_RAW_VALUES + 8], *pb[NR3_RAW_VALUES + 8];
+    HI_U16 *po[NR3_RAW_VALUES + 8], *pm[NR3_RAW_VALUES + 8];
+
+    memset(&mask, 0, sizeof(mask));
     for (int i = 0; i < 5; i++) {
-        const nr3_iey_t *ia = &a->IEy[i], *ib = &b->IEy[i];
-        out->IEy[i].IES0 = (HI_U16)interp(x, xl, ia->IES0, xr, ib->IES0);
-        out->IEy[i].IES1 = (HI_U16)interp(x, xl, ia->IES1, xr, ib->IES1);
-        out->IEy[i].IES2 = (HI_U16)interp(x, xl, ia->IES2, xr, ib->IES2);
-        out->IEy[i].IES3 = (HI_U16)interp(x, xl, ia->IES3, xr, ib->IES3);
-        out->IEy[i].IEDZ = (HI_U16)interp(x, xl, ia->IEDZ, xr, ib->IEDZ);
+        mask.SFy[i].SFN0 = mask.SFy[i].SFN1 = mask.SFy[i].SFN2 = 1;
     }
-    for (int i = 0; i < 4; i++) {
-        const nr3_sfy_t *sa = &a->SFy[i], *sb = &b->SFy[i];
-        out->SFy[i].SFS1 = (HI_U16)interp(x, xl, sa->SFS1, xr, sb->SFS1);
-        out->SFy[i].SFT1 = (HI_U16)interp(x, xl, sa->SFT1, xr, sb->SFT1);
-        out->SFy[i].SBR1 = (HI_U16)interp(x, xl, sa->SBR1, xr, sb->SBR1);
-        out->SFy[i].SFS2 = (HI_U16)interp(x, xl, sa->SFS2, xr, sb->SFS2);
-        out->SFy[i].SFT2 = (HI_U16)interp(x, xl, sa->SFT2, xr, sb->SFT2);
-        out->SFy[i].SBR2 = (HI_U16)interp(x, xl, sa->SBR2, xr, sb->SBR2);
-        out->SFy[i].SFS4 = (HI_U16)interp(x, xl, sa->SFS4, xr, sb->SFS4);
-        out->SFy[i].SFT4 = (HI_U16)interp(x, xl, sa->SFT4, xr, sb->SFT4);
-        out->SFy[i].SBR4 = (HI_U16)interp(x, xl, sa->SBR4, xr, sb->SBR4);
+    for (int i = 0; i < 3; i++) {
+        mask.TFy[i].bRef = 1;
+        mask.TFy[i].TED = 1;
     }
-    out->SFy[4].SFS1 = (HI_U16)interp(x, xl, a->SFy[4].SFS1, xr, b->SFy[4].SFS1);
-    out->SFy[4].SFS2 = (HI_U16)interp(x, xl, a->SFy[4].SFS2, xr, b->SFy[4].SFS2);
-    out->SFy[4].SFS4 = (HI_U16)interp(x, xl, a->SFy[4].SFS4, xr, b->SFy[4].SFS4);
-    out->MDy[0].AdvMATH = (HI_U16)interp(x, xl, a->MDy[0].AdvMATH, xr, b->MDy[0].AdvMATH);
-    out->MDy[0].AdvTH   = (HI_U16)interp(x, xl, a->MDy[0].AdvTH,   xr, b->MDy[0].AdvTH);
-    out->NRc.SFC = I(NRc.SFC);
-    out->NRc.TFC = I(NRc.TFC);
-    out->NRc.TPC = I(NRc.TPC);
-    out->NRc.TRC = I(NRc.TRC);
+
+    *out = *a;
+    int n = nr3_targets(&ta, pa);
+    nr3_targets(&tb, pb);
+    nr3_targets(out, po);
+    nr3_targets(&mask, pm);
+    for (int k = 0; k < n; k++)
+        if (!*pm[k])
+            *po[k] = (HI_U16)interp(x, xl, *pa[k], xr, *pb[k]);
 }
-#undef I
 
 /* Row -> VPSS_NRX_V3_S, field set and quirks of HI_SCENE_Set3DNR (the original
    loop over TFy writes TFy[1].SDZ1 from TFy[i].SDZ1, so the last value, i = 2,
