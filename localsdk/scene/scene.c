@@ -47,6 +47,28 @@
  * Internal types
  * ---------------------------------------------------------------------- */
 
+/* [module_state] flags, in the order of libsceneauto's SCENE_LoadModuleState
+   (indices confirmed by RE, see re_notes/libsceneauto_spec.md §1). A key that is
+   absent from the INI leaves its flag at 0, i.e. the module is off — exactly as
+   in the original. The key "bDyanamic3DNR" is misspelt in the original too. */
+#define SCENE_MODULE_LIST(X)     X(DEBUG, "bDebug") X(AEWEIGHTTAB, "bAeWeightTab") X(STATIC_AE, "bStaticAE")     X(STATIC_GLOBALCAC, "bStaticGlobalCac") X(STATIC_LOCALCAC, "bStaticLocalCac")     X(STATIC_DPC, "bStaticDPC") X(STATIC_WDREXPOSURE, "bStaticWdrExposure")     X(STATIC_FSWDR, "bStaticFsWdr") X(STATIC_AWB, "bStaticAWB") X(STATIC_AWBEX, "bStaticAWBEx")     X(STATIC_DRC, "bStaticDRC") X(STATIC_DEHAZE, "bStaticDehaze") X(STATIC_LDCI, "bStaticLdci")     X(STATIC_SATURATION, "bStaticSaturation") X(STATIC_CCM, "bStaticCCM") X(STATIC_NR, "bStaticNr")     X(STATIC_SHADING, "bStaticShading") X(STATIC_CSC, "bStaticCSC") X(STATIC_SHARPEN, "bStaticSharpen")     X(STATIC_CLUT, "bStaticClut") X(STATIC_CA, "bStaticCa") X(STATIC_CROSSTALK, "bStaticCrosstalk")     X(STATIC_3DNR, "bStatic3DNR") X(STATIC_VENC, "bStaticVenc") X(DYN_FPS, "bDynamicFps")     X(DYN_AE, "bDynamicAE") X(DYN_WDREXPOSURE, "bDynamicWdrExposure") X(DYN_ISOVENC, "bDynamicIsoVenc")     X(DYN_FSWDR, "bDynamicFSWDR") X(DYN_DRC, "bDynamicDrc") X(DYN_LINEARDRC, "bDynamicLinearDrc")     X(DYN_DEHAZE, "bDynamicDehaze") X(DYN_LDCI, "bDynamicLdci") X(DYN_NR, "bDynamicNr")     X(DYN_DPC, "bDynamicDpc") X(DYN_BLC, "bDynamicBLC") X(DYN_CA, "bDynamicCA")     X(DYN_SHADING, "bDynamicShading") X(DYN_GAMMA, "bDynamicGamma")     X(DYN_FALSECOLOR, "bDynamicFalseColor") X(DYN_3DNR, "bDyanamic3DNR")
+
+enum {
+#define X(id, key) MOD_##id,
+    SCENE_MODULE_LIST(X)
+#undef X
+    MOD_COUNT
+};
+
+static const char *const k_module_key[MOD_COUNT] = {
+#define X(id, key) key,
+    SCENE_MODULE_LIST(X)
+#undef X
+};
+
+/* Test a [module_state] flag of a profile. */
+#define MOD_ON(p, id) ((p)->mod[MOD_##id] != 0)
+
 typedef struct {
     /* [static_ae] */
     HI_U8   ae_run_interval;
@@ -121,10 +143,8 @@ typedef struct {
     HI_BOOL ae_weight_present;
     HI_U8   ae_weight[AE_ZONE_ROW][AE_ZONE_COLUMN];
 
-    /* [module_state] — only the flags we act on */
-    HI_BOOL mod_static_drc;
-    HI_BOOL mod_static_sharpen;
-    HI_BOOL mod_dyn_lineardrc;
+    /* [module_state] — all 41 flags of the original, indexed by MOD_* */
+    HI_U8   mod[MOD_COUNT];
 
     /* [dynamic_linear_drc] — per-ISO DRC strength (overrides the static strength
        at runtime; this is why the original is not over-bright in daylight). */
@@ -401,12 +421,12 @@ static int scene_handler(void *user, const char *section,
             parse_u8_arr(v, p->dehaze_str, 8);
 
     } else if (strcasecmp(section, "module_state") == 0) {
-        if      (strcasecmp(name, "bStaticDRC") == 0)
-            p->mod_static_drc     = atoi(v) ? HI_TRUE : HI_FALSE;
-        else if (strcasecmp(name, "bStaticSharpen") == 0)
-            p->mod_static_sharpen = atoi(v) ? HI_TRUE : HI_FALSE;
-        else if (strcasecmp(name, "bDynamicLinearDrc") == 0)
-            p->mod_dyn_lineardrc  = atoi(v) ? HI_TRUE : HI_FALSE;
+        for (int i = 0; i < MOD_COUNT; i++) {
+            if (strcasecmp(name, k_module_key[i]) == 0) {
+                p->mod[i] = atoi(v) ? 1 : 0;
+                break;
+            }
+        }
 
     } else if (strcasecmp(section, "static_drc") == 0) {
         /* Keys before DRCToneMappingValue parse fine; the 200-value tone-mapping
@@ -901,7 +921,7 @@ static void apply_ca(const scene_params_t *p)
    stAsymmetryCurve and the tone-mapping LUT at their ISP defaults. */
 static void apply_drc(const scene_params_t *p)
 {
-    if (!p->mod_static_drc)
+    if (!MOD_ON(p, STATIC_DRC))
         return;  /* [module_state] bStaticDRC = 0 → leave DRC untouched */
 
     ISP_DRC_ATTR_S attr;
@@ -935,7 +955,7 @@ static void apply_drc(const scene_params_t *p)
    ISP defaults from Get (the reference does not touch them). */
 static void apply_sharpen(const scene_params_t *p)
 {
-    if (!p->mod_static_sharpen)
+    if (!MOD_ON(p, STATIC_SHARPEN))
         return;  /* [module_state] bStaticSharpen = 0 → leave sharpen untouched */
 
     ISP_SHARPEN_ATTR_S attr;
@@ -1130,7 +1150,7 @@ static HI_U8 dld_interp_u8(const scene_params_t *p, const HI_U8 *val, HI_U32 iso
 
 static void apply_dynamic_drc(const scene_params_t *p, HI_U32 iso)
 {
-    if (!p || !p->mod_dyn_lineardrc || !p->dld_enable) return;
+    if (!p || !MOD_ON(p, DYN_LINEARDRC) || !p->dld_enable) return;
 
     ISP_DRC_ATTR_S attr;
     if (HI_MPI_ISP_GetDRCAttr(0, &attr) != HI_SUCCESS) return;
@@ -1212,6 +1232,18 @@ static void apply_scene(const scene_params_t *p)
  * Public API
  * ---------------------------------------------------------------------- */
 
+/* One-line dump of the enabled [module_state] flags of a profile. */
+static void log_modules(const char *tag, const scene_params_t *p)
+{
+    char buf[512];
+    size_t n = 0;
+    buf[0] = '\0';
+    for (int i = 1; i < MOD_COUNT && n < sizeof(buf) - 32; i++)
+        if (p->mod[i])
+            n += (size_t)snprintf(buf + n, sizeof(buf) - n, " %s", k_module_key[i]);
+    LOGGER(LOGGER_LEVEL_INFO, "[scene] %s modules on:%s", tag, buf);
+}
+
 int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
 {
     memset(&g_day,   0, sizeof(g_day));
@@ -1238,7 +1270,7 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
     g_active = &g_day;
 
     /* Start the per-ISO dynamic DRC thread (if the day profile enables it). */
-    if (!g_dynRun && g_day.mod_dyn_lineardrc) {
+    if (!g_dynRun && MOD_ON(&g_day, DYN_LINEARDRC)) {
         g_dynRun = 1;
         if (pthread_create(&g_dynThread, NULL, scene_dyn_thread, NULL) != 0) {
             g_dynRun = 0;
@@ -1251,6 +1283,8 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
            g_day.sat[0], g_day.nr_fine_str[0], g_day.ae_sys_gain_max, g_day.ccm_op_type,
            (int)g_day.awb_present,
            g_day.awb_static_wb[0], g_day.awb_static_wb[1], g_day.awb_static_wb[2], g_day.awb_static_wb[3]);
+    log_modules("day", &g_day);
+    log_modules("night", &g_night);
     LOGGER(LOGGER_LEVEL_INFO, "[scene] initialized: night sat[0]=%u nr_fine[0]=%u gain_max=%u ccm_op=%d",
            g_night.sat[0], g_night.nr_fine_str[0], g_night.ae_sys_gain_max, g_night.ccm_op_type);
     return 0;
