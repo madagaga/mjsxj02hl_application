@@ -51,7 +51,21 @@
    (indices confirmed by RE, see re_notes/libsceneauto_spec.md §1). A key that is
    absent from the INI leaves its flag at 0, i.e. the module is off — exactly as
    in the original. The key "bDyanamic3DNR" is misspelt in the original too. */
-#define SCENE_MODULE_LIST(X)     X(DEBUG, "bDebug") X(AEWEIGHTTAB, "bAeWeightTab") X(STATIC_AE, "bStaticAE")     X(STATIC_GLOBALCAC, "bStaticGlobalCac") X(STATIC_LOCALCAC, "bStaticLocalCac")     X(STATIC_DPC, "bStaticDPC") X(STATIC_WDREXPOSURE, "bStaticWdrExposure")     X(STATIC_FSWDR, "bStaticFsWdr") X(STATIC_AWB, "bStaticAWB") X(STATIC_AWBEX, "bStaticAWBEx")     X(STATIC_DRC, "bStaticDRC") X(STATIC_DEHAZE, "bStaticDehaze") X(STATIC_LDCI, "bStaticLdci")     X(STATIC_SATURATION, "bStaticSaturation") X(STATIC_CCM, "bStaticCCM") X(STATIC_NR, "bStaticNr")     X(STATIC_SHADING, "bStaticShading") X(STATIC_CSC, "bStaticCSC") X(STATIC_SHARPEN, "bStaticSharpen")     X(STATIC_CLUT, "bStaticClut") X(STATIC_CA, "bStaticCa") X(STATIC_CROSSTALK, "bStaticCrosstalk")     X(STATIC_3DNR, "bStatic3DNR") X(STATIC_VENC, "bStaticVenc") X(DYN_FPS, "bDynamicFps")     X(DYN_AE, "bDynamicAE") X(DYN_WDREXPOSURE, "bDynamicWdrExposure") X(DYN_ISOVENC, "bDynamicIsoVenc")     X(DYN_FSWDR, "bDynamicFSWDR") X(DYN_DRC, "bDynamicDrc") X(DYN_LINEARDRC, "bDynamicLinearDrc")     X(DYN_DEHAZE, "bDynamicDehaze") X(DYN_LDCI, "bDynamicLdci") X(DYN_NR, "bDynamicNr")     X(DYN_DPC, "bDynamicDpc") X(DYN_BLC, "bDynamicBLC") X(DYN_CA, "bDynamicCA")     X(DYN_SHADING, "bDynamicShading") X(DYN_GAMMA, "bDynamicGamma")     X(DYN_FALSECOLOR, "bDynamicFalseColor") X(DYN_3DNR, "bDyanamic3DNR")
+#define SCENE_MODULE_LIST(X) \
+    X(DEBUG, "bDebug") X(AEWEIGHTTAB, "bAeWeightTab") X(STATIC_AE, "bStaticAE") \
+    X(STATIC_GLOBALCAC, "bStaticGlobalCac") X(STATIC_LOCALCAC, "bStaticLocalCac") X(STATIC_DPC, "bStaticDPC") \
+    X(STATIC_WDREXPOSURE, "bStaticWdrExposure") X(STATIC_FSWDR, "bStaticFsWdr") X(STATIC_AWB, "bStaticAWB") \
+    X(STATIC_AWBEX, "bStaticAWBEx") X(STATIC_DRC, "bStaticDRC") X(STATIC_DEHAZE, "bStaticDehaze") \
+    X(STATIC_LDCI, "bStaticLdci") X(STATIC_SATURATION, "bStaticSaturation") X(STATIC_CCM, "bStaticCCM") \
+    X(STATIC_NR, "bStaticNr") X(STATIC_SHADING, "bStaticShading") X(STATIC_CSC, "bStaticCSC") \
+    X(STATIC_SHARPEN, "bStaticSharpen") X(STATIC_CLUT, "bStaticClut") X(STATIC_CA, "bStaticCa") \
+    X(STATIC_CROSSTALK, "bStaticCrosstalk") X(STATIC_3DNR, "bStatic3DNR") X(STATIC_VENC, "bStaticVenc") \
+    X(DYN_FPS, "bDynamicFps") X(DYN_AE, "bDynamicAE") X(DYN_WDREXPOSURE, "bDynamicWdrExposure") \
+    X(DYN_ISOVENC, "bDynamicIsoVenc") X(DYN_FSWDR, "bDynamicFSWDR") X(DYN_DRC, "bDynamicDrc") \
+    X(DYN_LINEARDRC, "bDynamicLinearDrc") X(DYN_DEHAZE, "bDynamicDehaze") X(DYN_LDCI, "bDynamicLdci") \
+    X(DYN_NR, "bDynamicNr") X(DYN_DPC, "bDynamicDpc") X(DYN_BLC, "bDynamicBLC") \
+    X(DYN_CA, "bDynamicCA") X(DYN_SHADING, "bDynamicShading") X(DYN_GAMMA, "bDynamicGamma") \
+    X(DYN_FALSECOLOR, "bDynamicFalseColor") X(DYN_3DNR, "bDyanamic3DNR")
 
 enum {
 #define X(id, key) MOD_##id,
@@ -1203,7 +1217,8 @@ static void *scene_dyn_thread(void *arg)
             ISP_EXP_INFO_S exp;
             if (HI_MPI_ISP_QueryExposureInfo(0, &exp) == HI_SUCCESS) {
                 apply_dynamic_drc(p, exp.u32ISO);
-                apply_dynamic_dehaze(p, exp.u32Exposure);
+                if (MOD_ON(p, DYN_DEHAZE))
+                    apply_dynamic_dehaze(p, exp.u32Exposure);
             }
         }
         sleep(1);
@@ -1211,21 +1226,25 @@ static void *scene_dyn_thread(void *arg)
     return NULL;
 }
 
+/* Each static module is applied only when its [module_state] flag is set, as in
+   libsceneauto (HI_SCENE_SetStatic* test the flag themselves; a missing flag
+   means off). Gamma follows bDynamicGamma: the original only ever programs it
+   from the luminance thread (HI_SCENE_SetDynamicVideoGamma). */
 static void apply_scene(const scene_params_t *p)
 {
-    apply_ae(p);
-    apply_ae_weight(p);
-    apply_awb(p);
-    apply_ccm(p);
-    apply_saturation(p);
-    apply_nr(p);
-    apply_gamma();
-    apply_dehaze(p);
-    apply_ca(p);
-    apply_ldci(p);
-    apply_dpc(p);
-    apply_drc(p);
-    apply_sharpen(p);
+    if (MOD_ON(p, STATIC_AE))         apply_ae(p);
+    if (MOD_ON(p, AEWEIGHTTAB))       apply_ae_weight(p);
+    if (MOD_ON(p, STATIC_AWB))        apply_awb(p);
+    if (MOD_ON(p, STATIC_CCM))        apply_ccm(p);
+    if (MOD_ON(p, STATIC_SATURATION)) apply_saturation(p);
+    if (MOD_ON(p, STATIC_NR))         apply_nr(p);
+    if (MOD_ON(p, DYN_GAMMA))         apply_gamma();
+    if (MOD_ON(p, STATIC_DEHAZE))     apply_dehaze(p);
+    if (MOD_ON(p, STATIC_CA))         apply_ca(p);
+    if (MOD_ON(p, STATIC_LDCI))       apply_ldci(p);
+    if (MOD_ON(p, STATIC_DPC))        apply_dpc(p);
+    if (MOD_ON(p, STATIC_DRC))        apply_drc(p);
+    if (MOD_ON(p, STATIC_SHARPEN))    apply_sharpen(p);
 }
 
 /* -------------------------------------------------------------------------
@@ -1270,7 +1289,8 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
     g_active = &g_day;
 
     /* Start the per-ISO dynamic DRC thread (if the day profile enables it). */
-    if (!g_dynRun && MOD_ON(&g_day, DYN_LINEARDRC)) {
+    if (!g_dynRun && (MOD_ON(&g_day, DYN_LINEARDRC) || MOD_ON(&g_night, DYN_LINEARDRC) ||
+                      MOD_ON(&g_day, DYN_DEHAZE) || MOD_ON(&g_night, DYN_DEHAZE))) {
         g_dynRun = 1;
         if (pthread_create(&g_dynThread, NULL, scene_dyn_thread, NULL) != 0) {
             g_dynRun = 0;
