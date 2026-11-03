@@ -80,6 +80,9 @@ static const char *const k_module_key[MOD_COUNT] = {
 #undef X
 };
 
+/* Maximum number of ISO / exposure levels kept for the dynamic tables. */
+#define SCENE_DYN_LEVELS 8
+
 /* Test a [module_state] flag of a profile. */
 #define MOD_ON(p, id) ((p)->mod[MOD_##id] != 0)
 
@@ -99,7 +102,6 @@ typedef struct {
     HI_U32  ae_route_again[ISP_AE_ROUTE_EX_MAX_NODES];
     HI_U32  ae_route_dgain[ISP_AE_ROUTE_EX_MAX_NODES];
     HI_U32  ae_route_isp_dgain[ISP_AE_ROUTE_EX_MAX_NODES];
-    HI_U8   ae_compensation;  /* AutoCompesation steady-state value; 0 = keep ISP default */
 
     /* [static_awb] — white-balance calibration */
     HI_BOOL awb_present;
@@ -232,6 +234,44 @@ typedef struct {
     HI_BOOL dpc_enable;
     HI_U16  dpc_strength[ISP_AUTO_ISO_STRENGTH_NUM];
     HI_U16  dpc_blend_ratio[ISP_AUTO_ISO_STRENGTH_NUM];
+
+    /* [dynamic_ae] - per exposure-level AE luma target and max hist offset
+       (exposure64 = ExpTime * ISO / 100, thresholds "aeExpLtoHThresh"). */
+    HI_U32  dae_cnt;
+    HI_U64  dae_thr[SCENE_DYN_LEVELS];
+    HI_U8   dae_comp[SCENE_DYN_LEVELS];
+    HI_U8   dae_hist[SCENE_DYN_LEVELS];
+
+    /* [dynamic_nr] - per-ISO luma-dependent coring ratio LUT (33 entries) and
+       per-level WDR frame strengths. */
+    HI_U32  dnr_cnt;
+    HI_U64  dnr_iso[SCENE_DYN_LEVELS];
+    HI_U16  dnr_coring[SCENE_DYN_LEVELS][HI_ISP_BAYERNR_LUT_LENGTH];
+    HI_U8   dnr_short[SCENE_DYN_LEVELS];
+    HI_U8   dnr_long[SCENE_DYN_LEVELS];
+
+    /* [dynamic_blc] - per-ISO black level (R, Gr, Gb, B). */
+    HI_U32  dblc_cnt;
+    HI_U64  dblc_iso[SCENE_DYN_LEVELS];
+    HI_U16  dblc_val[ISP_BAYER_CHN_NUM][SCENE_DYN_LEVELS];
+
+    /* [dynamic_ca] - per-ISO luma CA ratio LUT (128 entries per level; the INI
+       continues each row over several lines, one handler call per line). */
+    HI_U32  dca_cnt;
+    HI_U64  dca_iso[SCENE_DYN_LEVELS];
+    HI_U16  dca_lut[SCENE_DYN_LEVELS][HI_ISP_CA_YRATIO_LUT_LENGTH];
+    int     dca_fill[SCENE_DYN_LEVELS];   /* parse-time cursor per row */
+
+    /* [static_awbex] */
+    HI_BOOL awbex_present;
+    HI_U8   awbex_bypass;
+    HI_U8   awbex_tolerance;
+    HI_U32  awbex_out_thresh;
+    HI_U16  awbex_low_stop;
+    HI_U16  awbex_high_start;
+    HI_U16  awbex_high_stop;
+    HI_BOOL awbex_multi_ls_en;
+    HI_U16  awbex_multi_ct_wt[AWB_MULTI_CT_NUM];
 } scene_params_t;
 
 static scene_params_t g_day;
@@ -291,6 +331,15 @@ static int parse_u8_arr(const char *s, HI_U8 *out, int max_n)
     return n;
 }
 
+static int parse_u64_arr(const char *s, HI_U64 *out, int max_n)
+{
+    char *buf = (char *)s;
+    int n = 0;
+    for (char *tok = strtok(buf, ","); tok && n < max_n; tok = strtok(NULL, ","))
+        out[n++] = (HI_U64)strtoull(tok, NULL, 10);
+    return n;
+}
+
 static int parse_s32_arr(const char *s, HI_S32 *out, int max_n)
 {
     char *buf = (char *)s;
@@ -338,17 +387,78 @@ static int scene_handler(void *user, const char *section,
             parse_u32_arr(v, p->ae_route_isp_dgain, ISP_AE_ROUTE_EX_MAX_NODES);
 
     } else if (strcasecmp(section, "dynamic_ae") == 0) {
-        /* AutoCompesation (INI typo: missing 'n') is a per-exposure-segment AE
-         * luma target table, e.g. "82,82,80,80,80,80". The ISP exposes a single
-         * scalar u8Compensation; the values are near-constant (80-82) so we apply
-         * the steady-state (last, longest-exposure) value statically rather than
-         * running a segment-tracking thread. Matches the original (Comp=80). */
-        if (strcasecmp(name, "AutoCompesation") == 0) {
-            HI_U8 arr[8];
-            int n = parse_u8_arr(v, arr, 8);
-            if (n > 0)
-                p->ae_compensation = arr[n - 1];
+        /* Applied by apply_dynamic_ae(): the original interpolates both the
+           compensation and the max hist offset by exposure level. */
+        if      (strcasecmp(name, "aeExpCount") == 0)
+            p->dae_cnt = (HI_U32)atoi(v);
+        else if (strcasecmp(name, "aeExpLtoHThresh") == 0)
+            parse_u64_arr(v, p->dae_thr, SCENE_DYN_LEVELS);
+        else if (strcasecmp(name, "AutoCompesation") == 0)   /* sic */
+            parse_u8_arr(v, p->dae_comp, SCENE_DYN_LEVELS);
+        else if (strcasecmp(name, "AutoHistOffset") == 0)
+            parse_u8_arr(v, p->dae_hist, SCENE_DYN_LEVELS);
+
+    } else if (strcasecmp(section, "dynamic_nr") == 0) {
+        int idx;
+        if      (strcasecmp(name, "CoringRatioCount") == 0)
+            p->dnr_cnt = (HI_U32)atoi(v);
+        else if (strcasecmp(name, "CoringRatioIso") == 0)
+            parse_u64_arr(v, p->dnr_iso, SCENE_DYN_LEVELS);
+        else if (strcasecmp(name, "FrameShortStr") == 0)
+            parse_u8_arr(v, p->dnr_short, SCENE_DYN_LEVELS);
+        else if (strcasecmp(name, "FrameLongStr") == 0)
+            parse_u8_arr(v, p->dnr_long, SCENE_DYN_LEVELS);
+        else if (sscanf(name, "CoringRatio_%d", &idx) == 1 && idx >= 0 && idx < SCENE_DYN_LEVELS)
+            parse_u16_arr(v, p->dnr_coring[idx], HI_ISP_BAYERNR_LUT_LENGTH);
+
+    } else if (strcasecmp(section, "dynamic_blc") == 0) {
+        if      (strcasecmp(name, "BLCCount") == 0)
+            p->dblc_cnt = (HI_U32)atoi(v);
+        else if (strcasecmp(name, "IsoThresh") == 0)
+            parse_u64_arr(v, p->dblc_iso, SCENE_DYN_LEVELS);
+        else if (strcasecmp(name, "R") == 0)
+            parse_u16_arr(v, p->dblc_val[0], SCENE_DYN_LEVELS);
+        else if (strcasecmp(name, "Gr") == 0)
+            parse_u16_arr(v, p->dblc_val[1], SCENE_DYN_LEVELS);
+        else if (strcasecmp(name, "Gb") == 0)
+            parse_u16_arr(v, p->dblc_val[2], SCENE_DYN_LEVELS);
+        else if (strcasecmp(name, "B") == 0)
+            parse_u16_arr(v, p->dblc_val[3], SCENE_DYN_LEVELS);
+
+    } else if (strcasecmp(section, "dynamic_ca") == 0) {
+        int idx;
+        if      (strcasecmp(name, "CACount") == 0)
+            p->dca_cnt = (HI_U32)atoi(v);
+        else if (strcasecmp(name, "IsoThresh") == 0)
+            parse_u64_arr(v, p->dca_iso, SCENE_DYN_LEVELS);
+        else if (sscanf(name, "CAYRatioLut_%d", &idx) == 1 && idx >= 0 && idx < SCENE_DYN_LEVELS) {
+            char *buf = (char *)v;
+            size_t len = strlen(buf);
+            if (len > 0 && buf[len - 1] == '\\')       /* trailing continuation mark */
+                buf[len - 1] = '\0';
+            int remaining = HI_ISP_CA_YRATIO_LUT_LENGTH - p->dca_fill[idx];
+            if (remaining > 0)
+                p->dca_fill[idx] += parse_u16_arr(buf, p->dca_lut[idx] + p->dca_fill[idx], remaining);
         }
+
+    } else if (strcasecmp(section, "static_awbex") == 0) {
+        p->awbex_present = HI_TRUE;
+        if      (strcasecmp(name, "ByPass") == 0)
+            p->awbex_bypass = (HI_U8)atoi(v);
+        else if (strcasecmp(name, "Tolerance") == 0)
+            p->awbex_tolerance = (HI_U8)atoi(v);
+        else if (strcasecmp(name, "OutThresh") == 0)
+            p->awbex_out_thresh = (HI_U32)strtoul(v, NULL, 10);
+        else if (strcasecmp(name, "LowStop") == 0)
+            p->awbex_low_stop = (HI_U16)atoi(v);
+        else if (strcasecmp(name, "HighStart") == 0)
+            p->awbex_high_start = (HI_U16)atoi(v);
+        else if (strcasecmp(name, "HighStop") == 0)
+            p->awbex_high_stop = (HI_U16)atoi(v);
+        else if (strcasecmp(name, "MultiLightSourceEn") == 0)
+            p->awbex_multi_ls_en = atoi(v) ? HI_TRUE : HI_FALSE;
+        else if (strcasecmp(name, "MultiCTWt") == 0)
+            parse_u16_arr(v, p->awbex_multi_ct_wt, AWB_MULTI_CT_NUM);
 
     } else if (strcasecmp(section, "static_awb") == 0) {
         p->awb_present = HI_TRUE;
@@ -609,14 +719,12 @@ static void apply_ae(const scene_params_t *p)
     attr.stAuto.u8Tolerance                      = p->ae_tolerance;
     attr.stAuto.stAEDelayAttr.u16BlackDelayFrame = p->ae_black_delay;
     attr.stAuto.stAEDelayAttr.u16WhiteDelayFrame = p->ae_white_delay;
-    if (p->ae_compensation > 0)                  /* brighter luma target (INI AutoCompesation) */
-        attr.stAuto.u8Compensation               = p->ae_compensation;
 
     ret = HI_MPI_ISP_SetExposureAttr(0, &attr);
     LOGGER(LOGGER_LEVEL_DEBUG,
-           "[scene] SetExposureAttr fps=%u max_int=%u sys_gain_max=%u speed=%u tol=%u comp=%u ret=0x%x",
+           "[scene] SetExposureAttr fps=%u max_int=%u sys_gain_max=%u speed=%u tol=%u ret=0x%x",
            g_target_fps, max_int_time, p->ae_sys_gain_max, p->ae_speed, p->ae_tolerance,
-           p->ae_compensation, (unsigned)ret);
+           (unsigned)ret);
 
     if (p->ae_route_ex_valid && p->ae_route_node_num > 0) {
         ISP_AE_ROUTE_EX_S route;
@@ -1206,21 +1314,200 @@ static void apply_dynamic_drc(const scene_params_t *p, HI_U32 iso)
     HI_MPI_ISP_SetDRCAttr(0, &attr);
 }
 
-/* Polls the ISP exposure ISO once per second and re-applies the per-ISO DRC
-   strength for the active (day/night) profile. */
+/* -------------------------------------------------------------------------
+ * Dynamic tables (libsceneauto: HI_SCENE_SetDynamicAE / Nr / BLC / CA)
+ *
+ * All four pick a level with GetLevelLtoH (first threshold >= value, clamped
+ * to the last one), use row 0 as is for level 0 and otherwise interpolate
+ * linearly between rows l-1 and l, clamping outside [thr[l-1], thr[l]].
+ * ---------------------------------------------------------------------- */
+
+static HI_U32 dyn_interp(HI_U64 x, HI_U64 xl, HI_U32 yl, HI_U64 xr, HI_U32 yr)
+{
+    if (x <= xl) return yl;
+    if (x >= xr) return yr;
+    HI_U64 k = xr - xl;
+    return (HI_U32)(((xr - x) * yl + (x - xl) * yr + (k >> 1)) / k);
+}
+
+/* Selects the rows to blend; lo == hi for level 0. */
+static void dyn_rows(HI_U64 v, const HI_U64 *thr, HI_U32 n, HI_U32 *lo, HI_U32 *hi)
+{
+    if (n > SCENE_DYN_LEVELS) n = SCENE_DYN_LEVELS;
+    HI_U32 l = 0;
+    while (l < n && v > thr[l]) l++;
+    if (l >= n) l = n - 1;
+    *lo = (l == 0) ? 0 : l - 1;
+    *hi = l;
+}
+
+#define DYN_VAL(v, thr, tab, lo, hi) \
+    (((lo) == (hi)) ? (HI_U32)(tab)[hi] : dyn_interp((v), (thr)[lo], (tab)[lo], (thr)[hi], (tab)[hi]))
+
+/* AE: compensation + max hist offset by exposure64 (HI_SCENE_SetDynamicAE,
+   linear branch). The smart-exposure part of the original only runs when
+   something else enabled SmartExposure; not handled here. */
+static void apply_dynamic_ae(const scene_params_t *p, HI_U64 exposure)
+{
+    if (p->dae_cnt == 0) return;
+    HI_U32 lo, hi;
+    dyn_rows(exposure, p->dae_thr, p->dae_cnt, &lo, &hi);
+
+    ISP_EXPOSURE_ATTR_S attr;
+    if (HI_MPI_ISP_GetExposureAttr(0, &attr) != HI_SUCCESS) return;
+    attr.stAuto.u8Compensation  = (HI_U8)DYN_VAL(exposure, p->dae_thr, p->dae_comp, lo, hi);
+    attr.stAuto.u8MaxHistOffset = (HI_U8)DYN_VAL(exposure, p->dae_thr, p->dae_hist, lo, hi);
+    HI_S32 ret = HI_MPI_ISP_SetExposureAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] dynamic AE SetExposureAttr failed 0x%x", (unsigned)ret);
+}
+
+/* NR: coring ratio LUT by ISO; WDR frame strengths follow the lower row. */
+static void apply_dynamic_nr(const scene_params_t *p, HI_U32 iso)
+{
+    if (p->dnr_cnt == 0) return;
+    HI_U32 lo, hi;
+    dyn_rows(iso, p->dnr_iso, p->dnr_cnt, &lo, &hi);
+
+    ISP_NR_ATTR_S attr;
+    if (HI_MPI_ISP_GetNRAttr(0, &attr) != HI_SUCCESS) return;
+    for (int i = 0; i < HI_ISP_BAYERNR_LUT_LENGTH; i++) {
+        HI_U32 a = p->dnr_coring[lo][i], b = p->dnr_coring[hi][i];
+        attr.au16CoringRatio[i] = (HI_U16)((lo == hi) ? a : dyn_interp(iso, p->dnr_iso[lo], a, p->dnr_iso[hi], b));
+    }
+    attr.stWdr.au8WDRFrameStr[0]    = p->dnr_short[lo];
+    attr.stWdr.au8WDRFrameStr[1]    = p->dnr_long[lo];
+    attr.stWdr.au8FusionFrameStr[0] = p->dnr_short[lo];
+    attr.stWdr.au8FusionFrameStr[1] = p->dnr_long[lo];
+    HI_S32 ret = HI_MPI_ISP_SetNRAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] dynamic NR SetNRAttr failed 0x%x", (unsigned)ret);
+}
+
+/* BLC: manual black level by ISO (R, Gr, Gb, B). */
+static void apply_dynamic_blc(const scene_params_t *p, HI_U32 iso)
+{
+    if (p->dblc_cnt == 0) return;
+    HI_U32 lo, hi;
+    dyn_rows(iso, p->dblc_iso, p->dblc_cnt, &lo, &hi);
+
+    ISP_BLACK_LEVEL_S attr;
+    if (HI_MPI_ISP_GetBlackLevelAttr(0, &attr) != HI_SUCCESS) return;
+    attr.enOpType = OP_TYPE_MANUAL;
+    for (int c = 0; c < ISP_BAYER_CHN_NUM; c++)
+        attr.au16BlackLevel[c] = (HI_U16)DYN_VAL(iso, p->dblc_iso, p->dblc_val[c], lo, hi);
+    HI_S32 ret = HI_MPI_ISP_SetBlackLevelAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] dynamic BLC SetBlackLevelAttr failed 0x%x", (unsigned)ret);
+}
+
+/* CA: luma ratio LUT by ISO. A table that the INI parser could not fill
+   completely (continuation lines not indented) is ignored. */
+static void apply_dynamic_ca(const scene_params_t *p, HI_U32 iso)
+{
+    if (p->dca_cnt == 0) return;
+    HI_U32 lo, hi;
+    dyn_rows(iso, p->dca_iso, p->dca_cnt, &lo, &hi);
+    if (p->dca_fill[lo] < HI_ISP_CA_YRATIO_LUT_LENGTH || p->dca_fill[hi] < HI_ISP_CA_YRATIO_LUT_LENGTH)
+        return;
+
+    ISP_CA_ATTR_S attr;
+    if (HI_MPI_ISP_GetCAAttr(0, &attr) != HI_SUCCESS) return;
+    for (int i = 0; i < HI_ISP_CA_YRATIO_LUT_LENGTH; i++) {
+        HI_U32 a = p->dca_lut[lo][i], b = p->dca_lut[hi][i];
+        attr.stCA.au32YRatioLut[i] = (lo == hi) ? a : dyn_interp(iso, p->dca_iso[lo], a, p->dca_iso[hi], b);
+    }
+    HI_S32 ret = HI_MPI_ISP_SetCAAttr(0, &attr);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] dynamic CA SetCAAttr failed 0x%x", (unsigned)ret);
+}
+
+/* Static AWBEX (HI_SCENE_SetStaticAWBEX): WB bypass flag, then the extended
+   AWB tolerance / indoor-outdoor thresholds / multi light source weights. */
+static void apply_awbex(const scene_params_t *p)
+{
+    if (!p->awbex_present) return;
+
+    ISP_WB_ATTR_S wb;
+    HI_S32 ret = HI_MPI_ISP_GetWBAttr(0, &wb);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetWBAttr failed 0x%x", (unsigned)ret);
+        return;
+    }
+    wb.bByPass = p->awbex_bypass ? HI_TRUE : HI_FALSE;
+    ret = HI_MPI_ISP_SetWBAttr(0, &wb);
+    if (ret != HI_SUCCESS)
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetWBAttr(bypass) failed 0x%x", (unsigned)ret);
+
+    ISP_AWB_ATTR_EX_S ex;
+    ret = HI_MPI_ISP_GetAWBAttrEx(0, &ex);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetAWBAttrEx failed 0x%x", (unsigned)ret);
+        return;
+    }
+    ex.u8Tolerance             = p->awbex_tolerance;
+    ex.stInOrOut.u32OutThresh  = p->awbex_out_thresh;
+    ex.stInOrOut.u16LowStop    = p->awbex_low_stop;
+    ex.stInOrOut.u16HighStart  = p->awbex_high_start;
+    ex.stInOrOut.u16HighStop   = p->awbex_high_stop;
+    ex.bMultiLightSourceEn     = p->awbex_multi_ls_en;
+    for (int i = 0; i < AWB_MULTI_CT_NUM; i++)
+        ex.au16MultiCTWt[i] = p->awbex_multi_ct_wt[i];
+    ret = HI_MPI_ISP_SetAWBAttrEx(0, &ex);
+    LOGGER(LOGGER_LEVEL_INFO, "[scene] AWBEX bypass=%u tol=%u outThresh=%u ct=[%u,%u,%u] multi=%d ret=0x%x",
+           (unsigned)p->awbex_bypass, p->awbex_tolerance, p->awbex_out_thresh, p->awbex_low_stop,
+           p->awbex_high_start, p->awbex_high_stop, (int)p->awbex_multi_ls_en, (unsigned)ret);
+}
+
+/* Last values seen by the dynamic setters; g_dyn_force makes the next pass
+   re-apply everything (set after every static re-apply, since SetSceneMode
+   resets what they patched). */
+static HI_U32 g_last_iso_nr, g_last_iso_ca, g_last_iso_blc;
+static HI_U64 g_last_exp_ae;
+static volatile int g_dyn_force = 1;
+
+/* One pass of the dynamic setters, like the original's Normal/Luminance threads
+   but at our 1 s cadence. Each setter fires on a change of its input. */
+static void run_dynamic(const scene_params_t *p)
+{
+    ISP_EXP_INFO_S exp;
+    if (HI_MPI_ISP_QueryExposureInfo(0, &exp) != HI_SUCCESS)
+        return;
+    HI_U32 iso = exp.u32ISO;
+    HI_U64 exposure64 = (HI_U64)exp.u32ExpTime * iso / 100;
+    int force = g_dyn_force;
+    g_dyn_force = 0;
+
+    apply_dynamic_drc(p, iso);
+    if (MOD_ON(p, DYN_DEHAZE))
+        apply_dynamic_dehaze(p, exp.u32Exposure);
+    if (MOD_ON(p, DYN_AE) && (force || exposure64 != g_last_exp_ae)) {
+        g_last_exp_ae = exposure64;
+        apply_dynamic_ae(p, exposure64);
+    }
+    if (MOD_ON(p, DYN_NR) && (force || iso != g_last_iso_nr)) {
+        g_last_iso_nr = iso;
+        apply_dynamic_nr(p, iso);
+    }
+    if (MOD_ON(p, DYN_CA) && (force || iso != g_last_iso_ca)) {
+        g_last_iso_ca = iso;
+        apply_dynamic_ca(p, iso);
+    }
+    if (MOD_ON(p, DYN_BLC) && (force || iso != g_last_iso_blc)) {
+        g_last_iso_blc = iso;
+        apply_dynamic_blc(p, iso);
+    }
+}
+
+/* Polls the ISP exposure once per second and runs the dynamic setters for the
+   active (day/night) profile. */
 static void *scene_dyn_thread(void *arg)
 {
     (void)arg;
     while (g_dynRun) {
         const scene_params_t *p = g_active;
-        if (p) {
-            ISP_EXP_INFO_S exp;
-            if (HI_MPI_ISP_QueryExposureInfo(0, &exp) == HI_SUCCESS) {
-                apply_dynamic_drc(p, exp.u32ISO);
-                if (MOD_ON(p, DYN_DEHAZE))
-                    apply_dynamic_dehaze(p, exp.u32Exposure);
-            }
-        }
+        if (p)
+            run_dynamic(p);
         sleep(1);
     }
     return NULL;
@@ -1235,6 +1522,7 @@ static void apply_scene(const scene_params_t *p)
     if (MOD_ON(p, STATIC_AE))         apply_ae(p);
     if (MOD_ON(p, AEWEIGHTTAB))       apply_ae_weight(p);
     if (MOD_ON(p, STATIC_AWB))        apply_awb(p);
+    if (MOD_ON(p, STATIC_AWBEX))      apply_awbex(p);
     if (MOD_ON(p, STATIC_CCM))        apply_ccm(p);
     if (MOD_ON(p, STATIC_SATURATION)) apply_saturation(p);
     if (MOD_ON(p, STATIC_NR))         apply_nr(p);
@@ -1245,6 +1533,11 @@ static void apply_scene(const scene_params_t *p)
     if (MOD_ON(p, STATIC_DPC))        apply_dpc(p);
     if (MOD_ON(p, STATIC_DRC))        apply_drc(p);
     if (MOD_ON(p, STATIC_SHARPEN))    apply_sharpen(p);
+
+    /* The static pass above reset what the dynamic setters patch: run them now
+       instead of waiting for the next 1 s tick. */
+    g_dyn_force = 1;
+    run_dynamic(p);
 }
 
 /* -------------------------------------------------------------------------
@@ -1290,7 +1583,10 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
 
     /* Start the per-ISO dynamic DRC thread (if the day profile enables it). */
     if (!g_dynRun && (MOD_ON(&g_day, DYN_LINEARDRC) || MOD_ON(&g_night, DYN_LINEARDRC) ||
-                      MOD_ON(&g_day, DYN_DEHAZE) || MOD_ON(&g_night, DYN_DEHAZE))) {
+                      MOD_ON(&g_day, DYN_DEHAZE) || MOD_ON(&g_night, DYN_DEHAZE) ||
+                      MOD_ON(&g_day, DYN_AE) || MOD_ON(&g_night, DYN_AE) ||
+                      MOD_ON(&g_day, DYN_NR) || MOD_ON(&g_night, DYN_NR) ||
+                      MOD_ON(&g_day, DYN_CA) || MOD_ON(&g_day, DYN_BLC))) {
         g_dynRun = 1;
         if (pthread_create(&g_dynThread, NULL, scene_dyn_thread, NULL) != 0) {
             g_dynRun = 0;
