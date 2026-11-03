@@ -31,6 +31,7 @@
 
 static HI_U16 s_raw[NR3_MAX_ROWS][NR3_RAW_VALUES + 8];
 static int    s_fill[NR3_MAX_ROWS];
+static int    s_warned;
 
 /* Order of the numbers in a 3DnrParam_N row (= argument order of the original
    loader's sscanf). Returns the number of targets, NR3_RAW_VALUES expected. */
@@ -331,9 +332,14 @@ int nr3_apply(const scene_nr3_t *n, HI_U32 iso, int debug)
     nrx.stNRXParam_V3.enOptMode = OPERATION_MODE_MANUAL;
     HI_S32 ret = HI_MPI_VPSS_GetGrpNRXParam(NR3_VPSS_GRP, &nrx);
     if (ret != HI_SUCCESS) {
-        LOGGER(LOGGER_LEVEL_WARNING, "[scene] 3DNR GetGrpNRXParam failed 0x%x", (unsigned)ret);
+        /* Expected until the VPSS group is created (scene init runs earlier):
+           report only the first failure of a series. */
+        if (!s_warned)
+            LOGGER(LOGGER_LEVEL_WARNING, "[scene] 3DNR GetGrpNRXParam failed 0x%x (retrying)", (unsigned)ret);
+        s_warned = 1;
         return -1;
     }
+    s_warned = 0;
     nr3_to_vpss(&nrx.stNRXParam_V3.stNRXManual.stNRXParam, &cur);
     nrx.enNRVer = VPSS_NR_V3;
     nrx.stNRXParam_V3.enOptMode = OPERATION_MODE_MANUAL;

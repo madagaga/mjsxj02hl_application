@@ -1507,8 +1507,9 @@ static void run_dynamic(const scene_params_t *p)
     /* bDyanamic3DNR [sic]: the original calls it on every tick; the result only
        depends on the ISO, so a change of ISO is enough. */
     if (MOD_ON(p, DYN_3DNR) && (force || iso != g_last_iso_3dnr)) {
-        g_last_iso_3dnr = iso;
-        nr3_apply(&p->nr3, iso, MOD_ON(p, DEBUG));
+        /* The first passes run from scene_set_*() before the VPSS group exists:
+           on failure leave the cache invalid so the next tick retries. */
+        g_last_iso_3dnr = (nr3_apply(&p->nr3, iso, MOD_ON(p, DEBUG)) == 0) ? iso : ~0u;
     }
 }
 
