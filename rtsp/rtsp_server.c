@@ -48,6 +48,7 @@ typedef struct {
     bool     used;
     char     name[64];
     uint32_t framerate;
+    rtsp_clock_t clock;                  // pts -> wallclock anchor shared by the tracks
     rtsp_stream_t stream[RTSP_TRACKS];   // codec NONE when absent
 } session_t;
 
@@ -65,6 +66,9 @@ typedef struct {
     uint32_t packets;
     uint32_t octets;
     uint64_t last_pts;
+    uint32_t last_ts;                    // RTP timestamp of the last packet sent
+    uint32_t ts_next;                    // PCMA: timestamp following the last packet
+    bool     ts_valid;                   // ts_next is meaningful
     bool     sent;
 } track_t;
 
@@ -129,6 +133,10 @@ static void wake(void) {
 static uint32_t rtp_ts(const track_t *t, const rtsp_stream_t *s, uint64_t pts) {
     return t->ts_base + (uint32_t)((pts * s->clock_rate) / 1000000);
 }
+
+// G.711 timestamps follow the sample count; the pts only re-anchors them after
+// a gap or a drift of more than this many samples (20 ms at 8 kHz)
+#define RTSP_PCMA_RESYNC      160
 
 static bool tx_append(client_t *c, const void *data, size_t size) {
     if (c->tx_off > 0) {  // compact
@@ -196,6 +204,8 @@ typedef struct {
     uint32_t next_cur;                   // cursor after this packet
     uint32_t next_frag;
     uint64_t pts;
+    uint32_t ts;                         // RTP timestamp
+    bool     counted;                    // ts follows the sample counter (PCMA)
 } packet_t;
 
 // Builds the packet at the track cursor (track_resync() already stepped over
@@ -212,6 +222,7 @@ static bool packet_build(const track_t *t, const rtsp_stream_t *s, packet_t *p) 
 
         p->next_cur = t->cur;
         p->pts = nal->pts;
+        p->counted = false;
 
         if (s->codec == RTSP_CODEC_PCMA || size <= RTSP_MAX_PAYLOAD) {
             p->payload = data;
@@ -252,6 +263,17 @@ static bool packet_build(const track_t *t, const rtsp_stream_t *s, packet_t *p) 
         bool marker = last && (nal->flags & RTSP_NAL_AU_END) && s->codec != RTSP_CODEC_PCMA;
         uint8_t pt = (s->codec == RTSP_CODEC_PCMA) ? 8 : 96;
         uint32_t ts = rtp_ts(t, s, nal->pts);
+        if (s->codec == RTSP_CODEC_PCMA) {
+            // One byte is one sample: advance by exactly the frame length. The
+            // hardware pts jitters by a few samples, which would show as
+            // timestamp jitter if every packet were derived from it.
+            if (t->ts_valid) {
+                int32_t diff = (int32_t)(ts - t->ts_next);
+                if (diff >= -RTSP_PCMA_RESYNC && diff <= RTSP_PCMA_RESYNC) ts = t->ts_next;
+            }
+            p->counted = true;
+        }
+        p->ts = ts;
         uint32_t rtp_size = 12 + extra + p->payload_size;
 
         uint8_t *r = p->header;
@@ -284,6 +306,11 @@ static void packet_commit(track_t *t, const packet_t *p) {
     t->packets++;
     t->octets += (p->header_size - 16) + p->payload_size;
     t->last_pts = p->pts;
+    t->last_ts = p->ts;
+    if (p->counted) {
+        t->ts_next = p->ts + p->payload_size;
+        t->ts_valid = true;
+    }
     t->sent = true;
 }
 
@@ -333,6 +360,10 @@ static bool pump_tcp(client_t *c, track_t *t, rtsp_stream_t *s) {
             probe.cur = pkt[count].next_cur;
             probe.frag = pkt[count].next_frag;
             probe.seq++;
+            if (pkt[count].counted) {
+                probe.ts_next = pkt[count].ts + pkt[count].payload_size;
+                probe.ts_valid = true;
+            }
             count++;
         }
         if (count == 0) break;
@@ -446,7 +477,7 @@ static void send_sr(client_t *c) {
 
         pthread_mutex_lock(&s->lock);
         uint64_t wall = rtsp_stream_wallclock(s, t->last_pts);
-        uint32_t ts = rtp_ts(t, s, t->last_pts);
+        uint32_t ts = t->last_ts;
         pthread_mutex_unlock(&s->lock);
         if (wall == 0) continue;
 
@@ -750,6 +781,7 @@ static void handle_play(client_t *c, const request_t *req) {
 
     if (!c->playing) {
         // Video starts on the latest buffered key frame; audio at the same pts
+        for (int i = 0; i < RTSP_TRACKS; i++) c->track[i].ts_valid = false;  // re-anchor on the pts
         uint64_t start_pts = 0;
         bool have_pts = false;
         track_t *tv = &c->track[RTSP_TRACK_VIDEO];
@@ -1082,10 +1114,11 @@ bool rtsp_server_start(const rtsp_server_config_t *config, const rtsp_session_co
         s->used = true;
         snprintf(s->name, sizeof(s->name), "%s", sessions[i].name);
         s->framerate = sessions[i].framerate;
+        rtsp_clock_init(&s->clock);
         if (sessions[i].video != RTSP_CODEC_NONE &&
-            !rtsp_stream_init(&s->stream[RTSP_TRACK_VIDEO], sessions[i].video, sessions[i].video_buffer)) return false;
+            !rtsp_stream_init(&s->stream[RTSP_TRACK_VIDEO], sessions[i].video, sessions[i].video_buffer, &s->clock)) return false;
         if (sessions[i].audio != RTSP_CODEC_NONE &&
-            !rtsp_stream_init(&s->stream[RTSP_TRACK_AUDIO], sessions[i].audio, sessions[i].audio_buffer)) return false;
+            !rtsp_stream_init(&s->stream[RTSP_TRACK_AUDIO], sessions[i].audio, sessions[i].audio_buffer, &s->clock)) return false;
         LOGGER(LOGGER_LEVEL_INFO, "RTSP session \"%s\": video %u KB, audio %u KB.", s->name,
                sessions[i].video != RTSP_CODEC_NONE ? sessions[i].video_buffer / 1024 : 0,
                sessions[i].audio != RTSP_CODEC_NONE ? sessions[i].audio_buffer / 1024 : 0);

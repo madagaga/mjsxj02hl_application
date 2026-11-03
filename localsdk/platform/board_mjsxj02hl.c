@@ -38,14 +38,21 @@
  * measured on the stock camera — lit room ISO~1086, dark room ISO~5025. */
 #define MJSXJ02HL_NIGHT_ISO  3000     /* day-mode ISO above this → dark → night candidate */
 /* Night→day threshold, evaluated on the ISO measured in NIGHT mode, i.e. with
- * the IR flood on: the flood divides the ISO by ~4 for the same ambient light
- * (measured on the camera at dusk: day ISO 7998/7501/8960 → night ISO 1985/
- * 1991/2119, ratio 0.24-0.27). A threshold meant for the day-mode scale (the
- * former 2000) sat right on the night-mode ISO and made the camera flap every
- * ~14 s (day → ISO>3000 → night → ISO≈2000 → day …). The stock firmware uses
- * a night→day / day→night EV ratio of 1.5e6 / 1e7 (decompiled
- * photo_sensitive_day_control / night_control): 3000 / 6.7 ≈ 450. */
-#define MJSXJ02HL_DAY_ISO_IR  450     /* night-mode ISO below this → lit → day candidate */
+ * the IR flood on. The flood lowers the ISO for the same ambient light, so a
+ * threshold meant for the day-mode scale (the former 2000) sat right on the
+ * night-mode ISO and made the camera flap every ~14 s (day → ISO>3000 → night
+ * → ISO≈2000 → day …, measured at dusk on camera .163).
+ *
+ * Calibration from 6 days of logs on camera .163 (14-20/10/2026): at dawn the
+ * day-mode ISO right after a return to day is ~2.4x the night-mode ISO that
+ * triggered it (night 427-452 → day 1070-1087). Symmetrically, entering night
+ * at day ISO 3000 gives a night ISO of ~1250. 800 sits between the two
+ * (800 → ~1900 in day mode, under the 3000 entry threshold; 1250 above 800),
+ * i.e. ~1.5x margin on both sides. The first value, 450 (3000 / 6.7, the stock
+ * firmware's 1.5e6 / 1e7 EV ratio from photo_sensitive_day_control /
+ * night_control), removed the flapping but returned to day late on overcast
+ * mornings: on 20/10 the night ISO stayed at 650-950 from 09:30 to 10:30. */
+#define MJSXJ02HL_DAY_ISO_IR  800     /* night-mode ISO below this → lit → day candidate */
 /* Anti-flap hold, after the stock firmware's "interfere" state
  * (photo_sensitive_day_control: 3 day→night attempts within ~60 s, i.e. 0x8c
  * ticks of 430 ms, switch to the interfere state, which stays up to ~1 h):

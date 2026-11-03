@@ -34,6 +34,18 @@ typedef struct {
    read in place by the network thread. Both sides hold `lock`. Entries are
    addressed by a monotonic sequence number; evicted entries simply fall
    behind `first_seq`, which tells a slow reader it has been lapped. */
+/* pts -> wallclock anchor, shared by every stream of a session: the RTCP SRs of
+   the audio and video tracks must map the same pts to the same wallclock for a
+   player to line them up. It is set once, by whichever stream pushes first. */
+typedef struct {
+    pthread_mutex_t lock;
+    bool     set;
+    uint64_t pts;
+    uint64_t wall_us;           // CLOCK_REALTIME at pts
+} rtsp_clock_t;
+
+void rtsp_clock_init(rtsp_clock_t *c);
+
 typedef struct {
     pthread_mutex_t lock;
     rtsp_codec_t codec;
@@ -54,13 +66,11 @@ typedef struct {
     rtsp_param_t vps, sps, pps; // latest parameter sets, for the SDP
 
     uint64_t last_pts;          // latest pushed pts
-    bool     clock_set;         // pts -> wallclock anchor, for RTCP SR
-    uint64_t clock_pts;
-    uint64_t clock_wall_us;     // CLOCK_REALTIME at clock_pts
+    rtsp_clock_t *clock;        // shared session anchor, for RTCP SR (may be NULL)
 } rtsp_stream_t;
 
 // The ring is an anonymous mapping: pages are only backed once written
-bool rtsp_stream_init(rtsp_stream_t *s, rtsp_codec_t codec, uint32_t buf_size);
+bool rtsp_stream_init(rtsp_stream_t *s, rtsp_codec_t codec, uint32_t buf_size, rtsp_clock_t *clock);
 void rtsp_stream_free(rtsp_stream_t *s);
 
 // Drops every entry and hands the ring pages back to the kernel (no reader

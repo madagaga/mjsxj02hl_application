@@ -14,9 +14,15 @@ uint32_t rtsp_codec_clock_rate(rtsp_codec_t codec) {
     }
 }
 
-bool rtsp_stream_init(rtsp_stream_t *s, rtsp_codec_t codec, uint32_t buf_size) {
+void rtsp_clock_init(rtsp_clock_t *c) {
+    memset(c, 0, sizeof(*c));
+    pthread_mutex_init(&c->lock, NULL);
+}
+
+bool rtsp_stream_init(rtsp_stream_t *s, rtsp_codec_t codec, uint32_t buf_size, rtsp_clock_t *clock) {
     memset(s, 0, sizeof(*s));
     s->codec = codec;
+    s->clock = clock;
     s->clock_rate = rtsp_codec_clock_rate(codec);
     s->buf_size = buf_size;
     void *buf = mmap(NULL, buf_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -145,12 +151,18 @@ static bool store(rtsp_stream_t *s, const uint8_t *data, size_t size, uint64_t p
 
 static void anchor_clock(rtsp_stream_t *s, uint64_t pts) {
     s->last_pts = pts;
-    if (s->clock_set) return;
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    s->clock_pts = pts;
-    s->clock_wall_us = (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
-    s->clock_set = true;
+    rtsp_clock_t *c = s->clock;
+    if (!c) return;
+    // Lock order: stream, then clock (rtsp_stream_wallclock() is called the same way)
+    pthread_mutex_lock(&c->lock);
+    if (!c->set) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        c->pts = pts;
+        c->wall_us = (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
+        c->set = true;
+    }
+    pthread_mutex_unlock(&c->lock);
 }
 
 static bool push_nal(rtsp_stream_t *s, const uint8_t *nal, size_t size, uint64_t pts, bool au_end, bool keep) {
@@ -236,6 +248,10 @@ uint32_t rtsp_stream_find_pts(const rtsp_stream_t *s, uint64_t pts) {
 }
 
 uint64_t rtsp_stream_wallclock(const rtsp_stream_t *s, uint64_t pts) {
-    if (!s->clock_set) return 0;
-    return s->clock_wall_us + (pts - s->clock_pts);
+    rtsp_clock_t *c = s->clock;
+    if (!c) return 0;
+    pthread_mutex_lock(&c->lock);
+    uint64_t wall = c->set ? c->wall_us + (pts - c->pts) : 0;
+    pthread_mutex_unlock(&c->lock);
+    return wall;
 }
