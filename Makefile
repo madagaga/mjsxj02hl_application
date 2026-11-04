@@ -104,7 +104,7 @@ configs.o: ./configs/configs.c
 	$(CC) $(CCFLAGS) -c ./configs/configs.c -o $(OUTPUT)/objects/configs.o
 
 inih.o: ./configs/inih/ini.c
-	$(CC) $(CCFLAGS) -c ./configs/inih/ini.c -o $(OUTPUT)/objects/inih.o
+	$(CC) $(CCFLAGS) -DINI_MAX_LINE=512 -c ./configs/inih/ini.c -o $(OUTPUT)/objects/inih.o
 
 yyjson.o: ./yyjson/src/yyjson.c
 	$(CC) $(CCFLAGS) $(YYJSON_FLAGS) -c ./yyjson/src/yyjson.c -o $(OUTPUT)/objects/yyjson.o
