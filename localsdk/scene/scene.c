@@ -423,8 +423,8 @@ static int scene_handler(void *user, const char *section,
         else if (sscanf(name, "Table_%d", &idx) == 1 && idx >= 0 && idx < SCENE_GAMMA_TABLES) {
             char *buf = (char *)v;
             size_t len = strlen(buf);
-            if (len > 0 && buf[len - 1] == '\')       /* trailing continuation mark */
-                buf[len - 1] = ' ';
+            if (len > 0 && buf[len - 1] == '\\')       /* trailing continuation mark */
+                buf[len - 1] = '\0';
             int remaining = SCENE_GAMMA_NODES - p->dgm_fill[idx];
             if (remaining > 0)
                 p->dgm_fill[idx] += parse_u16_arr(buf, p->dgm_tab[idx] + p->dgm_fill[idx], remaining);
@@ -1695,12 +1695,11 @@ static int load_scene_ini(const char *path, void *user)
     int bol = 1;
     for (size_t i = 0; i < n; i++) {
         if (bol && ((in[i] >= '0' && in[i] <= '9') || in[i] == '-'))
-            out[o++] = '	';
+            out[o++] = '\t';
         out[o++] = in[i];
-        bol = (in[i] == '
-');
+        bol = (in[i] == '\n');
     }
-    out[o] = ' ';
+    out[o] = '\0';
     int ret = ini_parse_string(out, scene_handler, user);
     free(in);
     free(out);
