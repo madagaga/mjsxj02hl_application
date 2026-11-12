@@ -570,6 +570,8 @@ static int video_start_channel(int chn) {
 typedef struct { int chn; } VideoRunArg;
 static VideoRunArg g_videoRunArgs[2] = {{0}, {1}};
 
+#define VIDEO_RUN_PACK_MAX 16
+
 static void *sdk_video_run_thread(void *arg) {
     thread_set_name("video-run");
     VideoRunArg *a = (VideoRunArg *)arg;
@@ -595,14 +597,19 @@ static void *sdk_video_run_thread(void *arg) {
         if (HI_MPI_VENC_QueryStatus(vencChn, &stStat) != HI_SUCCESS) continue;
         if (stStat.u32CurPacks == 0) continue;
 
+        /* Packs of one frame (a handful) live in a per-thread array; only an
+           unusually fragmented frame falls back to the heap. */
+        VENC_PACK_S packBuf[VIDEO_RUN_PACK_MAX];
         VENC_STREAM_S stStream;
         memset(&stStream, 0, sizeof(stStream));
-        stStream.pstPack = malloc(sizeof(VENC_PACK_S) * stStat.u32CurPacks);
+        int heapPack = stStat.u32CurPacks > VIDEO_RUN_PACK_MAX;
+        stStream.pstPack = heapPack ? malloc(sizeof(VENC_PACK_S) * stStat.u32CurPacks) : packBuf;
         if (!stStream.pstPack) continue;
         stStream.u32PackCount = stStat.u32CurPacks;
 
         if (HI_MPI_VENC_GetStream(vencChn, &stStream, HI_FALSE) != HI_SUCCESS) {
-            free(stStream.pstPack); continue;
+            if (heapPack) free(stStream.pstPack);
+            continue;
         }
 
         if (g_encCb[chn]) {
@@ -620,7 +627,7 @@ static void *sdk_video_run_thread(void *arg) {
         }
 
         HI_MPI_VENC_ReleaseStream(vencChn, &stStream);
-        free(stStream.pstPack);
+        if (heapPack) free(stStream.pstPack);
     }
 
     g_videoRunning[chn] = 0;
