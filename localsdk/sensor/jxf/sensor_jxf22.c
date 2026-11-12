@@ -16,6 +16,7 @@
 #include <pthread.h>
 #include <sys/ioctl.h>
 
+#include "./../../thread_name.h"
 #include "sensor_jxf22.h"
 
 /* Hisilicon MPP */
@@ -289,6 +290,7 @@ static HI_S32 sensor_vi_start(void) {
 }
 
 static void *sensor_isp_thread(void *arg) {
+    thread_set_name("isp-run");
     (void)arg;
     HI_MPI_ISP_Run(0);
     return NULL;

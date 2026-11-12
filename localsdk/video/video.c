@@ -22,6 +22,7 @@
 #include <sys/select.h>
 
 /* Hisilicon MPP */
+#include "./../thread_name.h"
 #include "hi_comm_sys.h"
 #include "hi_comm_video.h"
 #include "hi_comm_venc.h"
@@ -570,6 +571,7 @@ typedef struct { int chn; } VideoRunArg;
 static VideoRunArg g_videoRunArgs[2] = {{0}, {1}};
 
 static void *sdk_video_run_thread(void *arg) {
+    thread_set_name("video-run");
     VideoRunArg *a = (VideoRunArg *)arg;
     int chn = a->chn;
     VENC_CHN vencChn = g_vencChn[chn];

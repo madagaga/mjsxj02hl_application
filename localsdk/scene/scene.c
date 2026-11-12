@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <pthread.h>
 
+#include "./../thread_name.h"
 #include "hi_type.h"
 #include "hi_comm_isp.h"
 #include "mpi_ae.h"
@@ -1619,6 +1620,7 @@ static void run_dynamic(const scene_params_t *p)
    active (day/night) profile. */
 static void *scene_dyn_thread(void *arg)
 {
+    thread_set_name("scene-dyn");
     (void)arg;
     while (g_dynRun) {
         const scene_params_t *p = g_active;

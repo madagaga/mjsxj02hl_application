@@ -12,6 +12,7 @@
 #include <ifaddrs.h>
 #include <arpa/inet.h>
 
+#include "./../localsdk/thread_name.h"
 #include "./mqtt.h"
 #include "./homeassistant.h"
 #include "./paho.mqtt.c/src/MQTTClient.h"
@@ -146,6 +147,7 @@ bool mqtt_sendf(const char *topic, const char *format, ...) {
 
 // Periodic data sending
 static void *mqtt_periodical(void *arg) {
+    thread_set_name("mqtt-periodic");
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
     
     bool endless_cycle = (bool) arg;
@@ -363,6 +365,7 @@ static struct playmedia_args {
 } playmedia_args;
 
 static void* mqtt_playmedia(void *args) {
+    thread_set_name("mqtt-playmedia");
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
     
     struct playmedia_args *arguments = (struct playmedia_args *) args;
@@ -506,6 +509,7 @@ static void mqtt_disconnect_callback(void *context, char *cause) {
 
 // Reconnect (for pthread)
 static void* mqtt_reconnection(void *args) {
+    thread_set_name("mqtt-reconnect");
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
     mqtt_disconnect_callback(NULL, NULL);
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed.");

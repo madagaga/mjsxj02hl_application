@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <time.h>
 
+#include "./../thread_name.h"
 #include "./alarm.h"
 #include "./../platform/platform.h"
 #include "./../video/video.h"      /* LOCALSDK_VIDEO_SECONDARY_CHANNEL */
@@ -542,6 +543,7 @@ static int32_t ivp_process_and_dispatch(VIDEO_FRAME_INFO_S *frame)
 
 static void *ivp_detect_thread(void *arg)
 {
+    thread_set_name("ivp-detect");
     VIDEO_FRAME_INFO_S frame;
     int32_t ret;
     (void)arg;
@@ -641,6 +643,7 @@ static bool alarm_state_mqtt(bool motion, bool humanoid)
 
 static void *alarm_state_timeout(void *args)
 {
+    thread_set_name("alarm-timeout");
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
 
     bool alarm_state_motion   = false;

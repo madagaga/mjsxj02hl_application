@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <time.h>
 
+#include "./../thread_name.h"
 #include "./osd.h"                 /* owns all LOCALSDK_OSD_* and LOCALSDK_ALARM_* types */
 #include "./../video/video.h"      /* LOCALSDK_VIDEO_PRIMARY_CHANNEL, BOARD_* constants */
 #include "./../../logger/logger.h"
@@ -334,6 +335,7 @@ static pthread_t datetime_thread;
 
 static void *osd_datetime_timer(void *args)
 {
+    thread_set_name("osd-datetime");
     (void)args;
     while (true) {
         time_t      current_time = time(NULL);

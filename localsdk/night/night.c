@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#include "./../thread_name.h"
 #include "./night.h"
 #include "./../alarm/alarm.h"
 #include "./../platform/platform.h"
@@ -27,6 +28,7 @@ static volatile int     g_nightLightRun    = 0;
 
 static void *night_light_thread(void *arg)
 {
+    thread_set_name("night-light");
     (void)arg;
     usleep(NIGHT_AE_SETTLE_S * 1000000u);
     const board_cfg_t *board = platform_get_board_cfg();

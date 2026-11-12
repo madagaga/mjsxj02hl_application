@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
+#include "./../localsdk/thread_name.h"
 #include "./rtsp_server.h"
 #include "./rtsp_stream.h"
 #include "./rtsp_util.h"
@@ -1008,6 +1009,7 @@ static void timers(void) {
 }
 
 static void *server_thread(void *arg) {
+    thread_set_name("rtsp-server");
     (void)arg;
     struct pollfd fds[3 + RTSP_SERVER_MAX_CLIENTS];
     int map[3 + RTSP_SERVER_MAX_CLIENTS];

@@ -11,6 +11,7 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 
+#include "./../thread_name.h"
 #include "./audio.h"
 #include "./../video/video.h"      /* LOCALSDK_VIDEO_PRIMARY/SECONDARY_CHANNEL */
 #include "./../platform/platform.h"
@@ -94,6 +95,7 @@ static void audio_codec_cfg(void)
 
 static void *audio_ai_thread(void *arg)
 {
+    thread_set_name("audio-ai");
     (void)arg;
     AUDIO_FRAME_S stFrame;
     AEC_FRAME_S   stAecFrm;
@@ -129,6 +131,7 @@ static void *audio_ai_thread(void *arg)
 
 static void *audio_aenc_thread(void *arg)
 {
+    thread_set_name("audio-aenc");
     (void)arg;
     AUDIO_STREAM_S stStream;
     fd_set read_fds;

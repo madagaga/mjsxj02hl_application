@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <time.h>
 
+#include "./../thread_name.h"
 #include "platform.h"
 #include "mpi_vi.h"
 #include "mpi_sys.h"
@@ -235,6 +236,7 @@ static int             g_keyTimeout   = 0;
 
 static void *button_thread(void *arg)
 {
+    thread_set_name("board-button");
     (void)arg;
     const board_cfg_t *b = &g_board_mjsxj02hl;
     printf("[SDK-THREAD]dbg: Platform Thread Start...\n");
