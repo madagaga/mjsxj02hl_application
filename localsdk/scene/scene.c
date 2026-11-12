@@ -83,6 +83,8 @@ static const char *const k_module_key[MOD_COUNT] = {
 
 /* Maximum number of ISO / exposure levels kept for the dynamic tables. */
 #define SCENE_DYN_LEVELS 8
+#define SCENE_GAMMA_TABLES 8
+#define SCENE_GAMMA_NODES  1025
 
 /* Test a [module_state] flag of a profile. */
 #define MOD_ON(p, id) ((p)->mod[MOD_##id] != 0)
@@ -243,6 +245,14 @@ typedef struct {
     HI_U8   dae_comp[SCENE_DYN_LEVELS];
     HI_U8   dae_hist[SCENE_DYN_LEVELS];
 
+    /* [dynamic_gamma] - up to SCENE_GAMMA_TABLES full 1025-node curves, picked
+       by exposure64 (LtoH thresholds) and blended over "Interval" steps. */
+    HI_U32  dgm_cnt;
+    HI_U32  dgm_interval;
+    HI_U64  dgm_thr[SCENE_DYN_LEVELS];
+    HI_U16  dgm_tab[SCENE_GAMMA_TABLES][SCENE_GAMMA_NODES];
+    int     dgm_fill[SCENE_GAMMA_TABLES];  /* parse-time cursor per table */
+
     /* [dynamic_nr] - per-ISO luma-dependent coring ratio LUT (33 entries) and
        per-level WDR frame strengths. */
     HI_U32  dnr_cnt;
@@ -401,6 +411,24 @@ static int scene_handler(void *user, const char *section,
             parse_u8_arr(v, p->dae_comp, SCENE_DYN_LEVELS);
         else if (strcasecmp(name, "AutoHistOffset") == 0)
             parse_u8_arr(v, p->dae_hist, SCENE_DYN_LEVELS);
+
+    } else if (strcasecmp(section, "dynamic_gamma") == 0) {
+        int idx;
+        if      (strcasecmp(name, "TotalNum") == 0)
+            p->dgm_cnt = (HI_U32)atoi(v);
+        else if (strcasecmp(name, "Interval") == 0)
+            p->dgm_interval = (HI_U32)atoi(v);
+        else if (strcasecmp(name, "gammaExpThreshLtoH") == 0)
+            parse_u64_arr(v, p->dgm_thr, SCENE_DYN_LEVELS);
+        else if (sscanf(name, "Table_%d", &idx) == 1 && idx >= 0 && idx < SCENE_GAMMA_TABLES) {
+            char *buf = (char *)v;
+            size_t len = strlen(buf);
+            if (len > 0 && buf[len - 1] == '\\')       /* trailing continuation mark */
+                buf[len - 1] = '\0';
+            int remaining = SCENE_GAMMA_NODES - p->dgm_fill[idx];
+            if (remaining > 0)
+                p->dgm_fill[idx] += parse_u16_arr(buf, p->dgm_tab[idx] + p->dgm_fill[idx], remaining);
+        }
 
     } else if (strcasecmp(section, "dynamic_nr") == 0) {
         int idx;
@@ -925,6 +953,26 @@ static void apply_nr(const scene_params_t *p)
     ret = HI_MPI_ISP_SetNRAttr(0, &attr);
     LOGGER(LOGGER_LEVEL_DEBUG, "[scene] SetNRAttr fine[0]=%u coring[0]=%u ret=0x%x",
            p->nr_fine_str[0], p->nr_coring_wgt[0], (unsigned)ret);
+}
+
+/* Writes one gamma curve (all 1025 nodes) through the ISP gamma channel. */
+static int set_gamma_curve(const HI_U16 *curve)
+{
+    ISP_GAMMA_ATTR_S attr;
+    HI_S32 ret = HI_MPI_ISP_GetGammaAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] GetGammaAttr failed 0x%x", (unsigned)ret);
+        return -1;
+    }
+    attr.bEnable     = HI_TRUE;
+    attr.enCurveType = ISP_GAMMA_CURVE_USER_DEFINE;
+    memcpy(attr.u16Table, curve, sizeof(attr.u16Table));
+    ret = HI_MPI_ISP_SetGammaAttr(0, &attr);
+    if (ret != HI_SUCCESS) {
+        LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetGammaAttr failed 0x%x", (unsigned)ret);
+        return -1;
+    }
+    return 0;
 }
 
 /* Gamma tone curve — the stock vendor curve (1025 nodes, from libsns_f22.so).
@@ -1466,6 +1514,56 @@ static void apply_awbex(const scene_params_t *p)
            p->awbex_high_start, p->awbex_high_stop, (int)p->awbex_multi_ls_en, (unsigned)ret);
 }
 
+/* Dynamic gamma (HI_SCENE_SetDynamicVideoGamma): level = GetLevelLtoH(exposure64)
+   over [dynamic_gamma] gammaExpThreshLtoH (gammaExpThreshHtoL is not used by the
+   binary); on a level change the curve moves from the previous table to the new
+   one in "Interval" steps (linear, SCENE_Interpulate), one SetGammaAttr + 30 ms
+   per step. The "previous table" is the last level programmed, also across a
+   day/night switch (then taken from the new profile's tables). */
+static HI_U32 g_gamma_level;
+static HI_U64 g_last_exp_gamma;
+static int    g_gamma_have;
+
+static HI_U32 gamma_level(const scene_params_t *p, HI_U64 exposure)
+{
+    HI_U32 lo, hi;
+    dyn_rows(exposure, p->dgm_thr, p->dgm_cnt, &lo, &hi);
+    return hi;
+}
+
+static void apply_dynamic_gamma(const scene_params_t *p, HI_U64 exposure, int force)
+{
+    if (p->dgm_cnt == 0 || p->dgm_cnt > SCENE_GAMMA_TABLES)
+        return;
+    HI_U32 level = gamma_level(p, exposure);
+    if (!force && g_gamma_have && level == g_gamma_level)
+        return;
+    HI_U32 from = g_gamma_have && g_gamma_level < p->dgm_cnt ? g_gamma_level : level;
+    const HI_U16 *a = p->dgm_tab[from], *b = p->dgm_tab[level];
+    HI_U32 steps = p->dgm_interval ? p->dgm_interval : 1;
+
+    if (!g_gamma_have || from == level || memcmp(a, b, sizeof(p->dgm_tab[0])) == 0) {
+        if (set_gamma_curve(b) != 0)
+            return;
+    } else {
+        HI_U16 cur[SCENE_GAMMA_NODES];
+        for (HI_U32 st = 0; st < steps; st++) {
+            for (int i = 0; i < SCENE_GAMMA_NODES; i++) {
+                HI_U32 x = a[i], y = b[i];
+                cur[i] = (HI_U16)(y < x ? x - ((x - y) * 256u * (st + 1) / steps >> 8)
+                                        : x + ((y - x) * 256u * (st + 1) / steps >> 8));
+            }
+            if (set_gamma_curve(cur) != 0)
+                return;
+            usleep(30000);
+        }
+    }
+    LOGGER(LOGGER_LEVEL_INFO, "[scene] dynamic gamma: level %u -> %u (exposure=%llu)",
+           (unsigned)from, (unsigned)level, (unsigned long long)exposure);
+    g_gamma_level = level;
+    g_gamma_have  = 1;
+}
+
 /* Last values seen by the dynamic setters; g_dyn_force makes the next pass
    re-apply everything (set after every static re-apply, since SetSceneMode
    resets what they patched). */
@@ -1486,6 +1584,10 @@ static void run_dynamic(const scene_params_t *p)
     g_dyn_force = 0;
 
     apply_dynamic_drc(p, iso);
+    if (MOD_ON(p, DYN_GAMMA) && p->dgm_cnt && (force || exposure64 != g_last_exp_gamma)) {
+        g_last_exp_gamma = exposure64;
+        apply_dynamic_gamma(p, exposure64, force);
+    }
     if (MOD_ON(p, DYN_DEHAZE))
         apply_dynamic_dehaze(p, exp.u32Exposure);
     if (MOD_ON(p, DYN_AE) && (force || exposure64 != g_last_exp_ae)) {
@@ -1540,7 +1642,7 @@ static void apply_scene(const scene_params_t *p)
     if (MOD_ON(p, STATIC_CCM))        apply_ccm(p);
     if (MOD_ON(p, STATIC_SATURATION)) apply_saturation(p);
     if (MOD_ON(p, STATIC_NR))         apply_nr(p);
-    if (MOD_ON(p, DYN_GAMMA))         apply_gamma();
+    if (MOD_ON(p, DYN_GAMMA) && !p->dgm_cnt) apply_gamma();  /* INI without [dynamic_gamma] tables */
     if (MOD_ON(p, STATIC_DEHAZE))     apply_dehaze(p);
     if (MOD_ON(p, STATIC_CA))         apply_ca(p);
     if (MOD_ON(p, STATIC_LDCI))       apply_ldci(p);
@@ -1570,13 +1672,47 @@ static void log_modules(const char *tag, const scene_params_t *p)
     LOGGER(LOGGER_LEVEL_INFO, "[scene] %s modules on:%s", tag, buf);
 }
 
+/* Reads an INI file the way libsceneauto's iniparser does: a value may continue
+   on following lines that are NOT indented (the shipped scene INIs list gamma /
+   3DNR / CA tables that way). inih only accepts indented continuations, so every
+   line that starts with a digit or '-' at column 0 (never a key name) gets a tab
+   before parsing. */
+static int load_scene_ini(const char *path, void *user)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return -1;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 0) { fclose(f); return -1; }
+    char *in = malloc((size_t)sz + 1);
+    char *out = malloc((size_t)sz * 2 + 2);
+    if (!in || !out) { free(in); free(out); fclose(f); return -1; }
+    size_t n = fread(in, 1, (size_t)sz, f);
+    fclose(f);
+    size_t o = 0;
+    int bol = 1;
+    for (size_t i = 0; i < n; i++) {
+        if (bol && ((in[i] >= '0' && in[i] <= '9') || in[i] == '-'))
+            out[o++] = '\t';
+        out[o++] = in[i];
+        bol = (in[i] == '\n');
+    }
+    out[o] = '\0';
+    int ret = ini_parse_string(out, scene_handler, user);
+    free(in);
+    free(out);
+    return ret;
+}
+
 int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
 {
     memset(&g_day,   0, sizeof(g_day));
     memset(&g_night, 0, sizeof(g_night));
 
     nr3_parse_begin();
-    int ret = ini_parse(day_ini, scene_handler, &g_day);
+    int ret = load_scene_ini(day_ini, &g_day);
     nr3_parse_end(&g_day.nr3);
     if (ret < 0) {
         LOGGER(LOGGER_LEVEL_ERROR, "[scene] cannot open day INI %s (ret=%d)", day_ini, ret);
@@ -1586,7 +1722,7 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
         LOGGER(LOGGER_LEVEL_WARNING, "[scene] day INI %s: parse stopped at line %d (long value — ignored)", day_ini, ret);
 
     nr3_parse_begin();
-    ret = ini_parse(night_ini, scene_handler, &g_night);
+    ret = load_scene_ini(night_ini, &g_night);
     nr3_parse_end(&g_night.nr3);
     if (ret < 0) {
         LOGGER(LOGGER_LEVEL_ERROR, "[scene] cannot open night INI %s (ret=%d)", night_ini, ret);
