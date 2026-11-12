@@ -24,6 +24,7 @@
 #include "ivs_md.h"
 #include "mpi_vpss.h"
 #include "mpi_sys.h"
+#include "mpi_ive.h"
 
 /* ── Alarm callback pool ─────────────────────────────────────────────────── */
 
@@ -399,30 +400,62 @@ static void md_mpp_deinit(void)
     LOGGER(LOGGER_LEVEL_DEBUG, "[alarm][md] motion detection deinitialized");
 }
 
+/* Copy the Y plane of a VPSS frame into an MD luma buffer with the IVE DMA
+   engine (like the original's SAMPLE_COMM_YUV_DMA_COPY): no CPU cycles, and no
+   slow reads through the uncached MMZ mapping. Falls back to a CPU copy if the
+   DMA fails and the frame is mapped. */
+static int32_t md_copy_luma(const VIDEO_FRAME_S *f, IVE_SRC_IMAGE_S *img)
+{
+    uint32_t w = f->u32Width  < img->u32Width  ? f->u32Width  : img->u32Width;
+    uint32_t h = f->u32Height < img->u32Height ? f->u32Height : img->u32Height;
+
+    IVE_DATA_S src, dst;
+    memset(&src, 0, sizeof(src));
+    memset(&dst, 0, sizeof(dst));
+    src.u64PhyAddr = f->u64PhyAddr[0];
+    src.u32Stride  = f->u32Stride[0];
+    src.u32Width   = w;
+    src.u32Height  = h;
+    dst.u64PhyAddr = img->au64PhyAddr[0];
+    dst.u64VirAddr = img->au64VirAddr[0];
+    dst.u32Stride  = img->au32Stride[0];
+    dst.u32Width   = w;
+    dst.u32Height  = h;
+
+    IVE_DMA_CTRL_S ctrl;
+    memset(&ctrl, 0, sizeof(ctrl));
+    ctrl.enMode = IVE_DMA_MODE_DIRECT_COPY;
+
+    IVE_HANDLE handle = 0;
+    HI_S32 ret = HI_MPI_IVE_DMA(&handle, &src, &dst, &ctrl, HI_TRUE);
+    if (ret == HI_SUCCESS) {
+        HI_BOOL finish = HI_FALSE;
+        do {
+            ret = HI_MPI_IVE_Query(handle, &finish, HI_TRUE);
+        } while (ret == HI_ERR_IVE_QUERY_TIMEOUT);
+        if (ret == HI_SUCCESS && finish)
+            return LOCALSDK_OK;
+    }
+
+    const uint8_t *vsrc = (const uint8_t *)(uintptr_t)f->u64VirAddr[0];
+    if (!vsrc) return LOCALSDK_ERROR;
+    uint8_t *vdst = (uint8_t *)(uintptr_t)img->au64VirAddr[0];
+    for (uint32_t y = 0; y < h; y++)
+        memcpy(vdst + y * img->au32Stride[0], vsrc + y * f->u32Stride[0], w);
+    return LOCALSDK_OK;
+}
+
 static void md_process_and_dispatch(VIDEO_FRAME_INFO_S *frame_info)
 {
-    VIDEO_FRAME_S *f   = &frame_info->stVFrame;
-    const uint8_t *src = (const uint8_t *)(uintptr_t)f->u64VirAddr[0];
-
-    if (!src) return;
+    VIDEO_FRAME_S *f = &frame_info->stVFrame;
 
     /* Copy Y plane into current luma buffer */
-    uint8_t  *dst        = (uint8_t *)(uintptr_t)g_mdImg[g_mdCurIdx].au64VirAddr[0];
-    uint32_t  src_stride = f->u32Stride[0];
-    uint32_t  dst_stride = g_mdImg[g_mdCurIdx].au32Stride[0];
-    uint32_t  copy_w     = f->u32Width < g_mdImg[g_mdCurIdx].u32Width
-                           ? f->u32Width : g_mdImg[g_mdCurIdx].u32Width;
-    uint32_t  copy_h     = f->u32Height < g_mdImg[g_mdCurIdx].u32Height
-                           ? f->u32Height : g_mdImg[g_mdCurIdx].u32Height;
-    for (uint32_t y = 0; y < copy_h; y++)
-        memcpy(dst + y * dst_stride, src + y * src_stride, copy_w);
+    if (md_copy_luma(f, &g_mdImg[g_mdCurIdx]) != LOCALSDK_OK) return;
 
     /* First frame: also fill reference buffer, skip processing */
     if (g_mdFirstFrame) {
         g_mdFirstFrame = HI_FALSE;
-        uint8_t *ref = (uint8_t *)(uintptr_t)g_mdImg[1 - g_mdCurIdx].au64VirAddr[0];
-        for (uint32_t y = 0; y < copy_h; y++)
-            memcpy(ref + y * dst_stride, src + y * src_stride, copy_w);
+        md_copy_luma(f, &g_mdImg[1 - g_mdCurIdx]);
         g_mdCurIdx = 1 - g_mdCurIdx;
         return;
     }
@@ -519,6 +552,20 @@ static void *ivp_detect_thread(void *arg)
         ret = HI_MPI_VPSS_GetChnFrame(video_get_vpss_grp(), LOCALSDK_VIDEO_SECONDARY_CHANNEL,
                                       &frame, 1000);
         if (ret != HI_SUCCESS) { usleep(50000); continue; }
+
+        /* Drop-if-busy, like the original (set_yuv refuses a frame while the
+           previous one is processed): the blocking get above is the only wait
+           (no polling sleep), and any frames queued during the last pass are
+           discarded so we always work on the freshest one. */
+        for (;;) {
+            VIDEO_FRAME_INFO_S newer;
+            memset(&newer, 0, sizeof(newer));
+            if (HI_MPI_VPSS_GetChnFrame(video_get_vpss_grp(), LOCALSDK_VIDEO_SECONDARY_CHANNEL,
+                                        &newer, 0) != HI_SUCCESS)
+                break;
+            HI_MPI_VPSS_ReleaseChnFrame(video_get_vpss_grp(), LOCALSDK_VIDEO_SECONDARY_CHANNEL, &frame);
+            frame = newer;
+        }
         if (g_mdInitialized) md_process_and_dispatch(&frame);
         ivp_process_and_dispatch(&frame);
         HI_MPI_VPSS_ReleaseChnFrame(video_get_vpss_grp(), LOCALSDK_VIDEO_SECONDARY_CHANNEL, &frame);
