@@ -27,7 +27,10 @@ bool rtsp_is_enabled(int channel) {
     }
 }
 
-static uint32_t video_buffer(int bitrate_kbps) {
+static uint32_t video_buffer(int bitrate_kbps, int rcmode) {
+    // Constant quality has no bounded bitrate: use the largest ring (it is only
+    // mapped while a client is connected).
+    if (rcmode == LOCALSDK_VIDEO_RCMODE_CONSTANT_QUALITY) return RTSP_VIDEO_BUFFER_MAX;
     int gop_s = APP_CFG.video.gop > 0 ? APP_CFG.video.gop : 1;
     uint32_t size = (uint32_t)(bitrate_kbps > 0 ? bitrate_kbps : 1000) * 125 * (uint32_t)(gop_s + 1);
     if (size < RTSP_VIDEO_BUFFER_MIN) size = RTSP_VIDEO_BUFFER_MIN;
@@ -68,7 +71,8 @@ bool rtsp_init() {
             s->video = video_codec(primary ? APP_CFG.video.primary_type : APP_CFG.video.secondary_type);
             s->audio = audio_is_enabled(channel) ? RTSP_CODEC_PCMA : RTSP_CODEC_NONE;
             s->framerate = LOCALSDK_VIDEO_FRAMERATE;
-            s->video_buffer = video_buffer(primary ? APP_CFG.video.primary_bitrate : APP_CFG.video.secondary_bitrate);
+            s->video_buffer = primary ? video_buffer(APP_CFG.video.primary_bitrate, APP_CFG.video.primary_rcmode)
+                                      : video_buffer(APP_CFG.video.secondary_bitrate, APP_CFG.video.secondary_rcmode);
             s->audio_buffer = RTSP_AUDIO_BUFFER;
             session_of[channel] = count++;
         }

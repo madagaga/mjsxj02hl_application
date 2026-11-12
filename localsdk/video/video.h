@@ -60,6 +60,7 @@ typedef struct {
     uint32_t osd;
     uint32_t payload;
     uint32_t rcmode;
+    uint32_t qp;             /* constant-quality mode: P-frame QP (I frames use qp-3) */
     uint32_t gop;
     uint32_t screen_size;
     uint32_t frame_size;

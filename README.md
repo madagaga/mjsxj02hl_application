@@ -113,6 +113,8 @@ primary_bitrate = 1800         ; Bitrate for primary channel
 secondary_bitrate = 900        ; Bitrate for secondary channel
 primary_rcmode = 2             ; Rate control mode for primary channel (0 = constant bitrate, 1 = constant quality, 2 = variable bitrate)
 secondary_rcmode = 2           ; Rate control mode for secondary channel (0 = constant bitrate, 1 = constant quality, 2 = variable bitrate)
+primary_qp = 23                ; Primary channel quantizer in constant quality mode (0-51, lower = better; I frames use QP-3, bitrate is ignored)
+secondary_qp = 23              ; Secondary channel quantizer in constant quality mode (0-51, lower = better; I frames use QP-3, bitrate is ignored)
 
 [audio]
 volume = 70                    ; Audio volume level (0-100)

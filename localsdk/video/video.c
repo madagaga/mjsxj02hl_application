@@ -214,6 +214,11 @@ static void sdk_video_shutdown_channel(int chn) {
     g_videoStarted[chn] = 0;
 }
 
+/* Constant-quality (FIXQP) quantizers: the configured value is the P-frame QP
+   (0-51, lower = better); I frames get 3 less, like the former fixed 20/23. */
+static HI_U32 sdk_video_pqp(uint32_t qp) { return qp > 51 ? 51 : qp; }
+static HI_U32 sdk_video_iqp(uint32_t qp) { qp = sdk_video_pqp(qp); return qp > 3 ? qp - 3 : 0; }
+
 static int sdk_video_create_venc_channel(VENC_CHN vencChn,
                                           LOCALSDK_VIDEO_OPTIONS *options, int jpeg) {
     VENC_CHN_ATTR_S attr;
@@ -254,8 +259,8 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn,
             attr.stRcAttr.stH264FixQp.u32Gop            = options->gop ? options->gop : options->fps;
             attr.stRcAttr.stH264FixQp.u32SrcFrameRate   = options->fps;
             attr.stRcAttr.stH264FixQp.fr32DstFrameRate  = options->fps;
-            attr.stRcAttr.stH264FixQp.u32IQp = 20;
-            attr.stRcAttr.stH264FixQp.u32PQp = 23;
+            attr.stRcAttr.stH264FixQp.u32IQp = sdk_video_iqp(options->qp);
+            attr.stRcAttr.stH264FixQp.u32PQp = sdk_video_pqp(options->qp);
         } else {
             attr.stRcAttr.enRcMode                       = VENC_RC_MODE_H264CBR;
             attr.stRcAttr.stH264Cbr.u32Gop              = options->gop ? options->gop : options->fps;
@@ -280,8 +285,8 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn,
             attr.stRcAttr.stH265FixQp.u32Gop            = options->gop ? options->gop : options->fps;
             attr.stRcAttr.stH265FixQp.u32SrcFrameRate   = options->fps;
             attr.stRcAttr.stH265FixQp.fr32DstFrameRate  = options->fps;
-            attr.stRcAttr.stH265FixQp.u32IQp = 20;
-            attr.stRcAttr.stH265FixQp.u32PQp = 23;
+            attr.stRcAttr.stH265FixQp.u32IQp = sdk_video_iqp(options->qp);
+            attr.stRcAttr.stH265FixQp.u32PQp = sdk_video_pqp(options->qp);
         } else {
             attr.stRcAttr.enRcMode                       = VENC_RC_MODE_H265CBR;
             attr.stRcAttr.stH265Cbr.u32Gop              = options->gop ? options->gop : options->fps;
@@ -744,6 +749,7 @@ bool video_init(void) {
         .osd          = osd_is_enabled(),
         .payload      = APP_CFG.video.primary_type,
         .rcmode       = APP_CFG.video.primary_rcmode,
+        .qp           = APP_CFG.video.primary_qp,
         .gop          = APP_CFG.video.gop * LOCALSDK_VIDEO_FRAMERATE,
         .screen_size  = BOARD_WIDTH * BOARD_HEIGHT,
         .frame_size   = LOCALSDK_VIDEO_PRIMARY_FRAMESIZE,
@@ -783,6 +789,7 @@ bool video_init(void) {
         .osd          = false,
         .payload      = APP_CFG.video.secondary_type,
         .rcmode       = APP_CFG.video.secondary_rcmode,
+        .qp           = APP_CFG.video.secondary_qp,
         .gop          = APP_CFG.video.gop * LOCALSDK_VIDEO_FRAMERATE,
         .screen_size  = BOARD_SUB_WIDTH * BOARD_SUB_HEIGHT,
         .frame_size   = LOCALSDK_VIDEO_SECONDARY_FRAMESIZE,

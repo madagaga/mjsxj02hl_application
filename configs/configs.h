@@ -40,6 +40,8 @@ typedef struct {
         int secondary_bitrate;
         int primary_rcmode;
         int secondary_rcmode;
+        int primary_qp;       // constant-quality mode: QP of P frames (I frames use QP-3)
+        int secondary_qp;
     } video;
 
     // [audio]

@@ -36,6 +36,8 @@ APPLICATION_CONFIGURATION APP_CFG = {
     .video.secondary_bitrate      = 900,                                    // Bitrate for secondary channel
     .video.primary_rcmode         = LOCALSDK_VIDEO_RCMODE_VARIABLE_BITRATE, // Rate control mode for primary channel
     .video.secondary_rcmode       = LOCALSDK_VIDEO_RCMODE_VARIABLE_BITRATE, // Rate control mode for secondary channel
+    .video.primary_qp             = 23,                                     // QP for primary channel in constant quality mode (0-51, lower = better)
+    .video.secondary_qp           = 23,                                     // QP for secondary channel in constant quality mode (0-51, lower = better)
 
     // [audio]
     .audio.volume                 = 70,                                     // Volume (0-100)
@@ -149,6 +151,10 @@ static int parser_handler(void* cfg, const char *section, const char *name, cons
         config->video.primary_rcmode = atoi(value);
     } else if(MATCH("video", "secondary_rcmode")) {
         config->video.secondary_rcmode = atoi(value);
+    } else if(MATCH("video", "primary_qp")) {
+        config->video.primary_qp = atoi(value);
+    } else if(MATCH("video", "secondary_qp")) {
+        config->video.secondary_qp = atoi(value);
 
     // [audio]
     } else if(MATCH("audio", "volume")) {
