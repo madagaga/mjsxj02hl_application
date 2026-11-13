@@ -77,7 +77,11 @@ int main(int argc, char **argv) {
     
     // Initialize pseudo-random number generator
     srand(time(NULL));
-    
+
+    // Writing to a socket whose peer has gone away must fail with EPIPE,
+    // not kill the process (set before any thread or socket exists)
+    if(signal(SIGPIPE, SIG_IGN) == SIG_ERR) LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "signal(SIGPIPE)");
+
     // Default path of config file
     char *config_filename = "/configs/mjsxj02hl.conf";
     

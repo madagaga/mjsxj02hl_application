@@ -369,7 +369,13 @@ static bool pump_tcp(client_t *c, track_t *t, rtsp_stream_t *s) {
         }
         if (count == 0) break;
 
-        ssize_t n = writev(c->fd, iov, count * 2);
+        // sendmsg(MSG_NOSIGNAL) instead of writev(): a client that disconnects
+        // must yield EPIPE, not a SIGPIPE that kills the whole process
+        struct msghdr msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_iov = iov;
+        msg.msg_iovlen = (size_t)count * 2;
+        ssize_t n = sendmsg(c->fd, &msg, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                 c->blocked = true;
