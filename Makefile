@@ -2,6 +2,9 @@ SKIP_SHARED_LIBS = OFF
 
 CROSS_COMPILE = arm-himix100-linux-
 CCFLAGS = -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations -I./include
+
+# Application code: optimized, warnings on, debug info and per-function sections (for --gc-sections and the map file)
+APP_FLAGS = -O2 -g -Wall -ffunction-sections -fdata-sections
 LDPATH = /opt/hisi-linux/x86-arm/arm-himix100-linux/target/usr/app/lib
 
 CC  = $(CROSS_COMPILE)gcc
@@ -34,7 +37,7 @@ LIBDIR = ./lib
 all: mkdirs mjsxj02hl
 
 mjsxj02hl: ./mjsxj02hl.c external-libs objects
-	$(CC) $(CCFLAGS) -L$(LDPATH) ./mjsxj02hl.c $(OUTPUT)/objects/*.o $(OUTPUT)/objects/*.a -o $(OUTPUT)/mjsxj02hl $(LDFLAGS)
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -L$(LDPATH) ./mjsxj02hl.c $(OUTPUT)/objects/*.o $(OUTPUT)/objects/*.a -o $(OUTPUT)/mjsxj02hl -Wl,-Map=$(OUTPUT)/mjsxj02hl.map $(LDFLAGS)
 
 ##############
 # PVS-STUDIO #
@@ -98,10 +101,10 @@ libpaho-mqtt3c.a:
 objects: logger.o init.o configs.o inih.o osd.o video.o audio.o speaker.o alarm.o night.o mqtt.o homeassistant.o rtsp.o rtsp_server.o rtsp_stream.o rtsp_util.o sensor.o board.o jxf22_cmos.o jxf22_ctl.o scene.o scene_nr3.o yyjson.o
 
 logger.o: ./logger/logger.c
-	$(CC) $(CCFLAGS) -c ./logger/logger.c -o $(OUTPUT)/objects/logger.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./logger/logger.c -o $(OUTPUT)/objects/logger.o
 
 configs.o: ./configs/configs.c
-	$(CC) $(CCFLAGS) -c ./configs/configs.c -o $(OUTPUT)/objects/configs.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./configs/configs.c -o $(OUTPUT)/objects/configs.o
 
 inih.o: ./configs/inih/ini.c
 	$(CC) $(CCFLAGS) -DINI_MAX_LINE=512 -c ./configs/inih/ini.c -o $(OUTPUT)/objects/inih.o
@@ -110,34 +113,34 @@ yyjson.o: ./yyjson/src/yyjson.c
 	$(CC) $(CCFLAGS) $(YYJSON_FLAGS) -c ./yyjson/src/yyjson.c -o $(OUTPUT)/objects/yyjson.o
 
 init.o: ./localsdk/init.c
-	$(CC) $(CCFLAGS) -c ./localsdk/init.c -o $(OUTPUT)/objects/init.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./localsdk/init.c -o $(OUTPUT)/objects/init.o
 
 osd.o: ./localsdk/osd/osd.c
-	$(CC) $(CCFLAGS) -c ./localsdk/osd/osd.c -o $(OUTPUT)/objects/osd.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./localsdk/osd/osd.c -o $(OUTPUT)/objects/osd.o
 
 video.o: ./localsdk/video/video.c
-	$(CC) $(CCFLAGS) -c ./localsdk/video/video.c -o $(OUTPUT)/objects/video.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./localsdk/video/video.c -o $(OUTPUT)/objects/video.o
 
 audio.o: ./localsdk/audio/audio.c
-	$(CC) $(CCFLAGS) -c ./localsdk/audio/audio.c -o $(OUTPUT)/objects/audio.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./localsdk/audio/audio.c -o $(OUTPUT)/objects/audio.o
 
 speaker.o: ./localsdk/speaker/speaker.c
-	$(CC) $(CCFLAGS) -c ./localsdk/speaker/speaker.c -o $(OUTPUT)/objects/speaker.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./localsdk/speaker/speaker.c -o $(OUTPUT)/objects/speaker.o
 
 alarm.o: ./localsdk/alarm/alarm.c
-	$(CC) $(CCFLAGS) -c ./localsdk/alarm/alarm.c -o $(OUTPUT)/objects/alarm.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./localsdk/alarm/alarm.c -o $(OUTPUT)/objects/alarm.o
 
 night.o: ./localsdk/night/night.c
-	$(CC) $(CCFLAGS) -c ./localsdk/night/night.c -o $(OUTPUT)/objects/night.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./localsdk/night/night.c -o $(OUTPUT)/objects/night.o
 
 mqtt.o: ./mqtt/mqtt.c
-	$(CC) $(CCFLAGS) -c ./mqtt/mqtt.c -o $(OUTPUT)/objects/mqtt.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./mqtt/mqtt.c -o $(OUTPUT)/objects/mqtt.o
 
 homeassistant.o: ./mqtt/homeassistant.c
-	$(CC) $(CCFLAGS) -c ./mqtt/homeassistant.c -o $(OUTPUT)/objects/homeassistant.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./mqtt/homeassistant.c -o $(OUTPUT)/objects/homeassistant.o
 
 rtsp.o: ./rtsp/rtsp.c
-	$(CC) $(CCFLAGS) -c ./rtsp/rtsp.c -o $(OUTPUT)/objects/rtsp.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./rtsp/rtsp.c -o $(OUTPUT)/objects/rtsp.o
 
 # The RTSP server is self-contained; built optimized, it runs on every packet
 rtsp_server.o: ./rtsp/rtsp_server.c
@@ -150,22 +153,22 @@ rtsp_util.o: ./rtsp/rtsp_util.c
 	$(CC) $(CCFLAGS) -O2 -Wall -c ./rtsp/rtsp_util.c -o $(OUTPUT)/objects/rtsp_util.o
 
 sensor.o: ./localsdk/sensor/jxf/sensor_jxf22.c
-	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/sensor_jxf22.c -o $(OUTPUT)/objects/sensor.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/sensor_jxf22.c -o $(OUTPUT)/objects/sensor.o
 
 board.o: ./localsdk/platform/board_mjsxj02hl.c
-	$(CC) $(CCFLAGS) -c ./localsdk/platform/board_mjsxj02hl.c -o $(OUTPUT)/objects/board.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -c ./localsdk/platform/board_mjsxj02hl.c -o $(OUTPUT)/objects/board.o
 
 jxf22_cmos.o: ./localsdk/sensor/jxf/jxf22_cmos.c
-	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_cmos.c -o $(OUTPUT)/objects/jxf22_cmos.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_cmos.c -o $(OUTPUT)/objects/jxf22_cmos.o
 
 jxf22_ctl.o: ./localsdk/sensor/jxf/jxf22_sensor_ctl.c
-	$(CC) $(CCFLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_sensor_ctl.c -o $(OUTPUT)/objects/jxf22_ctl.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/jxf22_sensor_ctl.c -o $(OUTPUT)/objects/jxf22_ctl.o
 
 scene.o: ./localsdk/scene/scene.c ./localsdk/scene/scene_nr3.h
-	$(CC) $(CCFLAGS) -I./configs/inih -I./logger -c ./localsdk/scene/scene.c -o $(OUTPUT)/objects/scene.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -I./configs/inih -I./logger -c ./localsdk/scene/scene.c -o $(OUTPUT)/objects/scene.o
 
 scene_nr3.o: ./localsdk/scene/scene_nr3.c ./localsdk/scene/scene_nr3.h
-	$(CC) $(CCFLAGS) -I./logger -I./localsdk/scene -c ./localsdk/scene/scene_nr3.c -o $(OUTPUT)/objects/scene_nr3.o
+	$(CC) $(CCFLAGS) $(APP_FLAGS) -I./logger -I./localsdk/scene -c ./localsdk/scene/scene_nr3.c -o $(OUTPUT)/objects/scene_nr3.o
 
 clean:
 	-rm -rf $(OUTPUT)/*
