@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include <sys/stat.h>
@@ -28,7 +29,9 @@
 static MQTTClient MQTTclient;
 static pthread_t periodical_thread;
 static pthread_t reconnection_thread;
-static pthread_t playmedia_thread;
+
+// Seconds between two full Home Assistant discovery publications
+#define MQTT_DISCOVERY_REFRESH 1800
 
 // Prepare string for use as MQTT paths/names
 char *mqtt_prepare_string(const char *string) {
@@ -160,6 +163,7 @@ static void *mqtt_periodical(void *arg) {
     bool endless_cycle = (bool) arg;
     bool first = endless_cycle;
     do { //-V1044
+        bool discovery_first = first;
         // First iteration
         if(first) {
             first = false;
@@ -178,7 +182,18 @@ static void *mqtt_periodical(void *arg) {
             discovery_logged = true;
             LOGGER(LOGGER_LEVEL_INFO, "Home Assistant Discovery is disabled in the settings or discovery prefix not set.");
         }
-        if(discovery) {
+        // The discovery messages are about 16 JSON documents: publish them when the
+        // periodic thread starts (each (re)connection) and then only every
+        // MQTT_DISCOVERY_REFRESH seconds, not on every period or after every command.
+        // The refresh covers a Home Assistant restart when messages are not retained.
+        static struct timespec discovery_last;
+        struct timespec discovery_now;
+        clock_gettime(CLOCK_MONOTONIC, &discovery_now);
+        // Only the periodic thread publishes it (a command triggers a one-shot call from
+        // the receive thread: two threads would share the discovery buffers)
+        bool discovery_due = endless_cycle && (discovery_first || (discovery_now.tv_sec - discovery_last.tv_sec) >= MQTT_DISCOVERY_REFRESH);
+        if(discovery && discovery_due) {
+            discovery_last = discovery_now;
 
             // info/fw_version
             if(mqtt_homeassistant_discovery(MQTT_HOMEASSISTANT_SENSOR, MQTT_INFO_TOPIC, "fw_version", NULL, NULL, 0, false)) {
@@ -365,20 +380,24 @@ static void *mqtt_periodical(void *arg) {
     return 0;
 }
 
-// Play media (for pthread)
-static struct playmedia_args {
+// Play media (for pthread). The arguments are allocated per command and owned by the
+// thread: the file name is a copy (the JSON document it came from is freed when the
+// message callback returns) and two commands in a row cannot overwrite each other.
+struct playmedia_args {
     char *filename;
     int type;
-} playmedia_args;
+};
 
 static void* mqtt_playmedia(void *args) {
     thread_set_name("mqtt-playmedia");
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
-    
+
     struct playmedia_args *arguments = (struct playmedia_args *) args;
     if(speaker_play_media(arguments->filename, arguments->type)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "speaker_play_media()");
     else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "speaker_play_media()");
-    
+    free(arguments->filename);
+    free(arguments);
+
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed.");
     return 0;
 }
@@ -425,30 +444,42 @@ static int mqtt_message_callback(void *context, char *topicName, int topicLen, M
                 yyjson_val *json_filename = yyjson_obj_get(json_root, "filename");
                 if(result &= yyjson_is_str(json_filename)) {
                     LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "yyjson_is_str(json_filename)");
-                    playmedia_args.filename = (char *) yyjson_get_str(json_filename);
-                    // Set volume level
+                    // Volume level (optional)
                     yyjson_val *json_volume = yyjson_obj_get(json_root, "volume");
-                    if(result &= yyjson_is_int(json_volume)) {
+                    if(yyjson_is_int(json_volume)) {
                         LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "yyjson_is_int(json_volume)");
                         if(result &= speaker_set_volume(yyjson_get_int(json_volume))) {
                             LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "speaker_set_volume()");
                         } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "speaker_set_volume()");
                     }
-                    // Get media type
-                    playmedia_args.type = APP_CFG.speaker.type;
+                    // Media type (optional): "g711", any other value is PCM
+                    int media_type = APP_CFG.speaker.type;
                     yyjson_val *json_type = yyjson_obj_get(json_root, "type");
-                    if(result &= yyjson_is_str(json_type)) {
-                        LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "yyjson_is_int(json_type)");
-                        if(result &= (strcmp(yyjson_get_str(json_type), "g711") == 0)) {
-                            playmedia_args.type = LOCALSDK_SPEAKER_G711_TYPE;
-                        } else {
-                            playmedia_args.type = LOCALSDK_SPEAKER_PCM_TYPE;
-                        }
+                    if(yyjson_is_str(json_type)) {
+                        media_type = (strcmp(yyjson_get_str(json_type), "g711") == 0) ? LOCALSDK_SPEAKER_G711_TYPE : LOCALSDK_SPEAKER_PCM_TYPE;
                     }
-                    // Play
-                    if(result &= (pthread_create(&playmedia_thread, NULL, mqtt_playmedia, (void *) &playmedia_args) == 0)) {
-                        LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "pthread_create(playmedia_thread)");
-                    } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "pthread_create(playmedia_thread)");
+                    // Play (detached thread: nobody joins it, its stack is released when it ends)
+                    struct playmedia_args *play = malloc(sizeof(*play));
+                    if(play != NULL) {
+                        play->filename = strdup(yyjson_get_str(json_filename));
+                        play->type = media_type;
+                        pthread_attr_t attr;
+                        pthread_t playmedia_thread;
+                        pthread_attr_init(&attr);
+                        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+                        if(play->filename != NULL && pthread_create(&playmedia_thread, &attr, mqtt_playmedia, play) == 0) {
+                            LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "pthread_create(playmedia_thread)");
+                        } else {
+                            LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "pthread_create(playmedia_thread)");
+                            free(play->filename);
+                            free(play);
+                            result = false;
+                        }
+                        pthread_attr_destroy(&attr);
+                    } else {
+                        LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "malloc(playmedia_args)");
+                        result = false;
+                    }
                 } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "yyjson_is_str(json_filename)");
             // Stop playback
             } else if(strcmp(yyjson_get_str(json_action), "stop_media") == 0) {

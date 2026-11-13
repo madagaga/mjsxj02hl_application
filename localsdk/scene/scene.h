@@ -7,6 +7,10 @@
  * target_fps: board operating framerate (e.g. 20); used to cap AE route EX IntTime. */
 int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps);
 
+/* Register the sensor's default gamma curve (1025 nodes, must stay valid): it is applied
+ * only when the scene INI has no [dynamic_gamma] tables. Call before scene_init(). */
+void scene_set_default_gamma(const HI_U16 *curve);
+
 /* Apply day-mode ISP parameters (color, normal AE range). */
 int scene_set_day(void);
 

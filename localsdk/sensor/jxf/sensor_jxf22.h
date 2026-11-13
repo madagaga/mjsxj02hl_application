@@ -6,7 +6,8 @@
  * the couple-specific values via sensor_jxf22_configure() then triggers
  * sensor_jxf22_bringup(). localsdk never includes this header. */
 
-#include "../../platform/platform.h"  /* sensor_config_t */
+#include "hi_comm_vi.h"                /* VI_DEV / VI_PIPE / VI_CHN */
+#include "../sensor.h"                 /* sensor_config_t */
 #include "sensor_jxf22_defs.h"         /* JXF22_* defaults */
 
 /* Push the board/sensor-couple configuration (target fps, orientation).

@@ -26,6 +26,7 @@
 #include "mpi_isp.h"
 #include "mpi_ae.h"
 #include "../sensor/jxf/sensor_jxf22.h"
+#include "../sensor/jxf/gamma_jxf22.h"
 #include "../scene/scene.h"
 #include "../../logger/logger.h"
 #include "../../configs/configs.h"
@@ -446,6 +447,7 @@ static HI_S32 mjsxj02hl_init(void)
                           ? APP_CFG.paths.scene_day   : MJSXJ02HL_SCENE_DAY;
     const char *night_ini = (APP_CFG.paths.scene_night && APP_CFG.paths.scene_night[0])
                           ? APP_CFG.paths.scene_night : MJSXJ02HL_SCENE_NIGHT;
+    scene_set_default_gamma(g_jxf22_gamma);   /* the scene module is sensor-blind: the couple supplies it */
     HI_S32 ret = scene_init(day_ini, night_ini, BOARD_TARGET_FPS);
     if (ret != 0) {
         LOGGER(LOGGER_LEVEL_ERROR, "[board][mjsxj02hl] scene_init failed (%d)", ret);

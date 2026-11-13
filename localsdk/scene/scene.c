@@ -43,7 +43,6 @@
 
 #include "scene.h"
 #include "scene_nr3.h"
-#include "gamma_jxf22.h"
 
 /* -------------------------------------------------------------------------
  * Internal types
@@ -976,13 +975,27 @@ static int set_gamma_curve(const HI_U16 *curve)
     return 0;
 }
 
-/* Gamma tone curve — the stock vendor curve (1025 nodes, from libsns_f22.so).
-   The ISP default gamma lifts shadows/mids more than the vendor curve, making
-   our image flat/washed out (measured: std 48 vs 66, blacks lifted, highlights
-   compressed). Apply the extracted curve via the runtime channel so we get the
-   original's contrast (deeper blacks, brighter highlights). */
+/* Default gamma tone curve (1025 nodes), registered by the board for its sensor
+   (scene_set_default_gamma): the scene module itself knows no sensor. Only used when
+   the scene INI carries no [dynamic_gamma] tables.
+   The stock vendor curve (from libsns_f22.so) is deeper in the shadows than the ISP
+   default, which lifts shadows/mids and makes the image flat/washed out (measured:
+   std 48 vs 66, blacks lifted, highlights compressed). Applying it via the runtime
+   channel gives the original's contrast (deeper blacks, brighter highlights). */
+static const HI_U16 *g_default_gamma = NULL;
+
+void scene_set_default_gamma(const HI_U16 *curve)
+{
+    g_default_gamma = curve;
+}
+
 static void apply_gamma(void)
 {
+    if (!g_default_gamma) {
+        LOGGER(LOGGER_LEVEL_INFO, "[scene] no default gamma curve registered, ISP default kept");
+        return;
+    }
+
     ISP_GAMMA_ATTR_S attr;
     HI_S32 ret = HI_MPI_ISP_GetGammaAttr(0, &attr);
     if (ret != HI_SUCCESS) {
@@ -992,14 +1005,14 @@ static void apply_gamma(void)
 
     attr.bEnable     = HI_TRUE;
     attr.enCurveType = ISP_GAMMA_CURVE_USER_DEFINE;
-    memcpy(attr.u16Table, g_jxf22_gamma, sizeof(g_jxf22_gamma));
+    memcpy(attr.u16Table, g_default_gamma, sizeof(attr.u16Table));
 
     ret = HI_MPI_ISP_SetGammaAttr(0, &attr);
     if (ret != HI_SUCCESS)
         LOGGER(LOGGER_LEVEL_WARNING, "[scene] SetGammaAttr failed 0x%x", (unsigned)ret);
     else
-        LOGGER(LOGGER_LEVEL_INFO, "[scene] Gamma applied (vendor 1025-node, mid=%u)",
-               g_jxf22_gamma[512]);
+        LOGGER(LOGGER_LEVEL_INFO, "[scene] Gamma applied (default 1025-node, mid=%u)",
+               g_default_gamma[512]);
 }
 
 /* Dehaze — the original firmware runs dehaze (bStaticDehaze=1, bDynamicDehaze=1)
@@ -1742,7 +1755,9 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
                       MOD_ON(&g_day, DYN_DEHAZE) || MOD_ON(&g_night, DYN_DEHAZE) ||
                       MOD_ON(&g_day, DYN_AE) || MOD_ON(&g_night, DYN_AE) ||
                       MOD_ON(&g_day, DYN_NR) || MOD_ON(&g_night, DYN_NR) ||
-                      MOD_ON(&g_day, DYN_CA) || MOD_ON(&g_day, DYN_BLC) ||
+                      MOD_ON(&g_day, DYN_CA) || MOD_ON(&g_night, DYN_CA) ||
+                      MOD_ON(&g_day, DYN_BLC) || MOD_ON(&g_night, DYN_BLC) ||
+                      MOD_ON(&g_day, DYN_GAMMA) || MOD_ON(&g_night, DYN_GAMMA) ||
                       MOD_ON(&g_day, DYN_3DNR) || MOD_ON(&g_night, DYN_3DNR))) {
         g_dynRun = 1;
         if (pthread_create(&g_dynThread, NULL, scene_dyn_thread, NULL) != 0) {

@@ -442,24 +442,50 @@ int osd_rectangles_callback(LOCALSDK_ALARM_EVENT_INFO *eventInfo)
     if (!osd_is_enabled()) return LOCALSDK_OK;
     if (!APP_CFG.osd.motion && !APP_CFG.osd.humanoid) return LOCALSDK_OK;
 
+    /* The motion detector and the IVP each publish one event per frame holding only
+       their own objects. Rebuilding the rectangles from the latest event alone let
+       an empty event of one source erase what the other had just drawn, so keep the
+       latest event of each source and draw both. */
+    static LOCALSDK_ALARM_EVENT_INFO s_lastEvent[2];   /* [0] motion, [1] humanoid */
+    static uint64_t s_lastEventMs[2];                  /* when each one arrived */
+    static pthread_mutex_t s_lastEventLock = PTHREAD_MUTEX_INITIALIZER;
+    const uint64_t stale_ms = 1000;   /* a source that went quiet (detection stopped) must not leave boxes frozen */
+
+    struct timespec now_ts;
+    clock_gettime(CLOCK_MONOTONIC, &now_ts);
+    uint64_t now_ms = (uint64_t)now_ts.tv_sec * 1000u + (uint64_t)now_ts.tv_nsec / 1000000u;
+
+    int slot;
+    if (eventInfo->type == LOCALSDK_ALARM_TYPE_MOTION)        slot = 0;
+    else if (eventInfo->type == LOCALSDK_ALARM_TYPE_HUMANOID) slot = 1;
+    else return LOCALSDK_OK;
+
     LOCALSDK_OSD_RECTANGLES rectangles;
     rectangles.count = 0;
 
-    for (int i = 0; i < LOCALSDK_ALARM_MAXIMUM_OBJECTS; i++) {
-        bool want = (APP_CFG.osd.motion    && eventInfo->objects[i].type == LOCALSDK_ALARM_TYPE_MOTION)
-                 || (APP_CFG.osd.humanoid  && eventInfo->objects[i].type == LOCALSDK_ALARM_TYPE_HUMANOID);
-        if (!want || !eventInfo->objects[i].state) continue;
+    pthread_mutex_lock(&s_lastEventLock);
+    s_lastEvent[slot] = *eventInfo;
+    s_lastEventMs[slot] = now_ms;
+    /* Humanoids first: the rectangle list holds LOCALSDK_ALARM_MAXIMUM_OBJECTS entries
+       shared by both sources */
+    for (int s = 1; s >= 0; s--) {
+        bool enabled = (s == 1) ? APP_CFG.osd.humanoid : APP_CFG.osd.motion;
+        if (!enabled || now_ms - s_lastEventMs[s] > stale_ms) continue;
+        for (int i = 0; i < LOCALSDK_ALARM_MAXIMUM_OBJECTS; i++) {
+            const typeof(s_lastEvent[s].objects[i]) *o = &s_lastEvent[s].objects[i];
+            if (!o->state || rectangles.count >= LOCALSDK_ALARM_MAXIMUM_OBJECTS) continue;
 
-        uint32_t n = rectangles.count++;
-        rectangles.objects[n].x       = eventInfo->objects[i].x;
-        rectangles.objects[n].y       = eventInfo->objects[i].y;
-        rectangles.objects[n].width   = eventInfo->objects[i].width;
-        rectangles.objects[n].height  = eventInfo->objects[i].height;
-        rectangles.objects[n].visible = 1;
-        rectangles.objects[n].color   = (eventInfo->objects[i].type == LOCALSDK_ALARM_TYPE_HUMANOID)
-                                        ? LOCALSDK_OSD_COLOR_ORANGE
-                                        : LOCALSDK_OSD_COLOR_GREEN;
+            uint32_t n = rectangles.count++;
+            rectangles.objects[n].x       = o->x;
+            rectangles.objects[n].y       = o->y;
+            rectangles.objects[n].width   = o->width;
+            rectangles.objects[n].height  = o->height;
+            rectangles.objects[n].visible = 1;
+            rectangles.objects[n].color   = (s == 1) ? LOCALSDK_OSD_COLOR_ORANGE
+                                                     : LOCALSDK_OSD_COLOR_GREEN;
+        }
     }
+    pthread_mutex_unlock(&s_lastEventLock);
 
     if (osd_update_rect_multi(LOCALSDK_VIDEO_PRIMARY_CHANNEL, true, &rectangles) != LOCALSDK_OK)
         LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "osd_update_rect_multi(true)");

@@ -33,6 +33,7 @@
 #define RTSP_HEADER_MAX       20     // interleave (4) + RTP (12) + FU header (3)
 #define RTSP_BATCH            32     // RTP packets per writev
 #define RTSP_TIMEOUT_S        60     // session timeout advertised to clients
+#define RTSP_UNAUTH_TIMEOUT_S 10     // idle limit of a connection that has not authenticated
 #define RTSP_STALL_MS         30000  // TCP client not draining anything: dropped
 #define RTSP_SR_INTERVAL_MS   5000
 #define RTSP_THREAD_STACK     (64 * 1024)
@@ -82,6 +83,7 @@ typedef struct {
     bool     playing;
     bool     closing;                    // close once tx is flushed
     bool     blocked;                    // last write hit EAGAIN: wait for POLLOUT
+    bool     authed;                     // passed Digest authentication on this connection
     uint32_t session_id;
     char     nonce[33];
     uint8_t  rx[RTSP_RX_SIZE];
@@ -628,7 +630,10 @@ static bool authorized(client_t *c, const request_t *req) {
             rtsp_md5_hex(buf, strlen(buf), ha2);
             snprintf(buf, sizeof(buf), "%s:%s:%s", ha1, nonce, ha2);
             rtsp_md5_hex(buf, strlen(buf), expected);
-            if (strcasecmp(expected, response) == 0) return true;
+            if (strcasecmp(expected, response) == 0) {
+                c->authed = true;
+                return true;
+            }
         }
     }
 
@@ -832,8 +837,15 @@ static void handle_play(client_t *c, const request_t *req) {
         for (int i = 0; i < RTSP_TRACKS; i++) {
             track_t *t = &c->track[i];
             if (!t->setup) continue;
-            n += snprintf(headers + n, sizeof(headers) - n, "%surl=%s%strack%d;seq=%u;rtptime=%u",
-                          first ? "" : ",", req->url, sep, i, t->seq, rtp_ts(t, &sess->stream[i], start_pts));
+            if (need_key) {
+                // No key frame buffered: the first image sent will be a newer one, so an
+                // rtptime computed from the last pts would be wrong. It is optional: leave it out.
+                n += snprintf(headers + n, sizeof(headers) - n, "%surl=%s%strack%d;seq=%u",
+                              first ? "" : ",", req->url, sep, i, t->seq);
+            } else {
+                n += snprintf(headers + n, sizeof(headers) - n, "%surl=%s%strack%d;seq=%u;rtptime=%u",
+                              first ? "" : ",", req->url, sep, i, t->seq, rtp_ts(t, &sess->stream[i], start_pts));
+            }
             first = false;
         }
         snprintf(headers + n, sizeof(headers) - n, "\r\n");
@@ -856,7 +868,9 @@ static void handle_request(client_t *c, char *text) {
         c->closing = true;
         return;
     }
-    c->activity_ms = rtsp_now_ms();
+    // OPTIONS and GET_PARAMETER are answered without credentials. They must not keep a
+    // slot alive for an anonymous connection, or a few of them hold every slot forever.
+    if (!g_auth || c->authed) c->activity_ms = rtsp_now_ms();
 
     if (req.session && c->session_id && strtoul(req.session, NULL, 16) != c->session_id) {
         reply(c, req.cseq, "454 Session Not Found", NULL, NULL);
@@ -1001,7 +1015,9 @@ static void timers(void) {
         if (!c->used) continue;
         // UDP players must send keep-alives (RTSP or RTCP); any idle
         // non-playing connection would otherwise hold a client slot
-        if ((!c->tcp || !c->playing) && now - c->activity_ms > RTSP_TIMEOUT_S * 1000ULL) {
+        // A connection that has not authenticated gets a short leash: it only needs to answer one 401
+        uint64_t idle_limit_ms = (g_auth && !c->authed) ? RTSP_UNAUTH_TIMEOUT_S * 1000ULL : RTSP_TIMEOUT_S * 1000ULL;
+        if ((!c->tcp || !c->playing || (g_auth && !c->authed)) && now - c->activity_ms > idle_limit_ms) {
             LOGGER(LOGGER_LEVEL_INFO, "RTSP client %s timed out.", inet_ntoa(c->peer.sin_addr));
             client_close(c);
             continue;
@@ -1186,11 +1202,25 @@ void rtsp_server_stop(void) {
     // Stream rings are kept: encoder threads may still be pushing into them
 }
 
+// A video NAL the ring could not store (larger than half of it): clients lose a frame
+// and then wait for a key frame. Say why and ask the encoder for a fresh one, at most
+// once per second so an oversized stream cannot flood the encoder with requests.
+static void video_push_failed(int session, size_t size) {
+    static uint64_t last_ms = 0;
+    uint64_t now = rtsp_now_ms();
+    if (now - last_ms < 1000) return;
+    last_ms = now;
+    LOGGER(LOGGER_LEVEL_WARNING, "RTSP session %d: a %zu byte video NAL does not fit the ring, requesting a key frame.",
+           session, size);
+    if (g_config.key_frame_needed) g_config.key_frame_needed(session);
+}
+
 bool rtsp_server_push_video(int session, const uint8_t *data, size_t size, uint64_t pts, bool frame_end) {
     if (!g_running || session < 0 || session >= RTSP_SERVER_MAX_SESSIONS) return false;
     rtsp_stream_t *s = &g_sessions[session].stream[RTSP_TRACK_VIDEO];
     if (s->codec == RTSP_CODEC_NONE) return false;
     bool result = rtsp_stream_push(s, data, size, pts, frame_end, g_connected > 0);
+    if (!result && g_connected > 0) video_push_failed(session, size);
     if (frame_end) wake();
     return result;
 }

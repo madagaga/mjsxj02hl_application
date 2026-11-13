@@ -7,16 +7,7 @@
 #include "hi_comm_vi.h"    /* VI_DEV / VI_PIPE / VI_CHN */
 #include "hi_comm_aio.h"   /* AUDIO_DEV */
 
-/* -------------------------------------------------------------------------
- * Generic sensor configuration pushed by the board to its sensor.
- * Carries only what the board/sensor couple may tune at bring-up time; the
- * intrinsic sensor attributes (MIPI/VI/ISP) live inside the sensor module.
- * ---------------------------------------------------------------------- */
-typedef struct {
-    HI_U32  fps;      /* target output fps (sensor VMAX retiming) */
-    HI_BOOL mirror;
-    HI_BOOL flip;
-} sensor_config_t;
+#include "../sensor/sensor.h"   /* sensor_config_t (the board pushes it to its sensor) */
 
 /* -------------------------------------------------------------------------
  * Board interface — the ONLY thing localsdk consumes. localsdk is blind to
