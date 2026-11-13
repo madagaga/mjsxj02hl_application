@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdbool.h>
+#include <ctype.h>
 #include <string.h>
 #include <time.h>
 
@@ -12,21 +14,31 @@
 #include "./../localsdk/init.h"
 #include "./../configs/configs.h"
 
+// Is a message of this level written? (negative levels are always written)
+static bool logger_enabled(const int level) {
+    return level < 0 || level <= APP_CFG.logger.level;
+}
+
 // Write message to log
 static int logger_write(const int level, const char *format, ...) {
     int result = 0;
-    if(level < 0 || level <= APP_CFG.logger.level) {
-        va_list params;
+    if(logger_enabled(level)) {
+        va_list params, params_copy;
         va_start(params, format);
+        va_copy(params_copy, params); // a va_list can only be consumed once
         result = vprintf(format, params);
+        // stdout is redirected to a file and fully buffered: flush, or the last
+        // lines before a crash (the useful ones) are lost
+        fflush(stdout);
         // Write to file
         if(APP_CFG.logger.file && APP_CFG.logger.file[0]) {
             FILE *file;
-            if(file = fopen(APP_CFG.logger.file, "a")) {
-                vfprintf(file, format, params);
+            if((file = fopen(APP_CFG.logger.file, "a"))) {
+                vfprintf(file, format, params_copy);
                 fclose(file);
             }
         }
+        va_end(params_copy);
         va_end(params);
     }
     return result;
@@ -34,34 +46,40 @@ static int logger_write(const int level, const char *format, ...) {
 
 // Add message to log
 int logger(const char *file, const int line, const char *function, const int level, char *format, ...) {
-    int result = 0;
-    // Trim non-printable symbols
-    char *frmt_buffer = prepare_string(format);
+    // Filtered messages cost nothing: no formatting, no allocation
+    if(!logger_enabled(level)) return 0;
+
+    // Trim non-printable symbols from the format (stack buffer: the logger must
+    // not allocate, it is called from every thread including under memory pressure)
+    char frmt_buffer[512];
+    const char *frmt = format;
+    size_t frmt_length = strlen(format);
+    if(frmt_length < sizeof(frmt_buffer)) {
+        size_t j = 0;
+        for(size_t i = 0; i < frmt_length; i++) {
+            if(isprint((unsigned char) format[i])) frmt_buffer[j++] = format[i];
+        }
+        frmt_buffer[j] = '\0';
+        frmt = frmt_buffer;
+    }
     // Date & Time
     time_t rawtime;
+    struct tm timeinfo;
     char datetime[18];
     memset(datetime, '\0', sizeof(datetime));
-    if(time(&rawtime) != -1) {
-        struct tm *timeinfo;
-        if(timeinfo = localtime(&rawtime)) {
-            strftime(datetime, sizeof(datetime), "%x %X", timeinfo);
-        }
+    if(time(&rawtime) != -1 && localtime_r(&rawtime, &timeinfo)) {
+        strftime(datetime, sizeof(datetime), "%x %X", &timeinfo);
     }
     // Nanoseconds
     struct timespec spec;
     clock_gettime(CLOCK_REALTIME, &spec);
-    // Print message
+    // Print message (longer than the buffer: truncated)
+    char message[1536];
     va_list params;
     va_start(params, format);
-    char *message = "";
-    if(vasprintf(&message, frmt_buffer, params) != -1) {
-        result = logger_write(level, "[%s.%09d] [%s:%d][%s]: %s\n", datetime, spec.tv_nsec, file, line, function, message);
-        free(frmt_buffer);
-        free(message);
-    }
+    vsnprintf(message, sizeof(message), frmt, params);
     va_end(params);
-    
-    return result;
+    return logger_write(level, "[%s.%09ld] [%s:%d][%s]: %s\n", datetime, (long) spec.tv_nsec, file, line, function, message);
 }
 
 // Hexdump of memory

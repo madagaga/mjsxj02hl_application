@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <errno.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -47,7 +48,7 @@
    INTERNAL LOGGING
    ============================================================================ */
 
-static inline void sdk_log(const char *fmt, ...) {
+static inline void video_log(const char *fmt, ...) {
     char buf[512];
     va_list ap;
     va_start(ap, fmt);
@@ -76,9 +77,6 @@ static HI_U32   g_mainWrapBufSize = 0;
 
 /* Callbacks */
 static int32_t (*g_encCb[2])(LOCALSDK_H26X_FRAME_INFO *frameInfo) = {NULL, NULL};
-static int32_t (*g_yuvCb[2])(LOCALSDK_H26X_FRAME_INFO *frameInfo) = {NULL, NULL};
-static int (*g_algoRegisterCb)(void)   = NULL;
-static int (*g_algoUnregisterCb)(void) = NULL;
 
 /* Run threads */
 static pthread_t       g_videoRunThread[2]  = {0, 0};
@@ -94,33 +92,28 @@ static uint32_t g_videoParams[256];
    CONSTANTS
    ============================================================================ */
 
-#define SDK_SYS_ALIGN_WIDTH   64
-#define SDK_INVALID_CHANNEL   0xffffffff
+#define VIDEO_SYS_ALIGN_WIDTH   64
 
 /* ============================================================================
    INTERNAL HELPERS
    ============================================================================ */
 
-static int sdk_video_any_started(void) {
-    return g_videoStarted[0] || g_videoStarted[1];
-}
-
-static LOCALSDK_VIDEO_OPTIONS *sdk_video_get_options(int chn) {
+static LOCALSDK_VIDEO_OPTIONS *video_get_options(int chn) {
     if (chn < 0 || chn > 1) return NULL;
     return (LOCALSDK_VIDEO_OPTIONS *)&g_videoParams[chn * 32];
 }
 
-static uint32_t sdk_align_up(uint32_t value, uint32_t align) {
+static uint32_t video_align_up(uint32_t value, uint32_t align) {
     return (value + (align - 1)) & ~(align - 1);
 }
 
-static uint32_t sdk_calc_yuv420_blk_size(uint32_t width, uint32_t height) {
-    uint32_t w = sdk_align_up(width,  SDK_SYS_ALIGN_WIDTH);
-    uint32_t h = sdk_align_up(height, SDK_SYS_ALIGN_WIDTH);
+static uint32_t video_calc_yuv420_blk_size(uint32_t width, uint32_t height) {
+    uint32_t w = video_align_up(width,  VIDEO_SYS_ALIGN_WIDTH);
+    uint32_t h = video_align_up(height, VIDEO_SYS_ALIGN_WIDTH);
     return (w * h * 3) / 2;
 }
 
-static int sdk_video_resolution_to_size(int resolution, SIZE_S *size) {
+static int video_resolution_to_size(int resolution, SIZE_S *size) {
     if (!size) return LOCALSDK_ERROR;
     switch (resolution) {
         case LOCALSDK_VIDEO_RESOLUTION_1920x1080:
@@ -131,7 +124,7 @@ static int sdk_video_resolution_to_size(int resolution, SIZE_S *size) {
     }
 }
 
-static PAYLOAD_TYPE_E sdk_video_payload_type(uint32_t payload, int jpeg) {
+static PAYLOAD_TYPE_E video_payload_type(uint32_t payload, int jpeg) {
     if (jpeg) return PT_JPEG;
     switch (payload) {
         case LOCALSDK_VIDEO_PAYLOAD_H265: return PT_H265;
@@ -139,33 +132,11 @@ static PAYLOAD_TYPE_E sdk_video_payload_type(uint32_t payload, int jpeg) {
     }
 }
 
-/* Resolution utility functions (static: only used inside this module) */
-static int video_get_pic_size(int resolution, LOCALSDK_PICTURE_SIZE *size) {
-    if (!size) return LOCALSDK_ERROR;
-    switch (resolution) {
-        case LOCALSDK_VIDEO_RESOLUTION_640x360:
-            size->width = 640; size->height = 360; return LOCALSDK_OK;
-        case LOCALSDK_VIDEO_RESOLUTION_1920x1080:
-            size->width = 1920; size->height = 1080; return LOCALSDK_OK;
-        default: return LOCALSDK_ERROR;
-    }
-}
-
-static int video_validate_resolution(int resolution, int *out) {
-    if (!out) return LOCALSDK_ERROR;
-    switch (resolution) {
-        case LOCALSDK_VIDEO_RESOLUTION_640x360:
-        case LOCALSDK_VIDEO_RESOLUTION_1920x1080:
-            *out = resolution; return LOCALSDK_OK;
-        default: return LOCALSDK_ERROR;
-    }
-}
-
 /* ============================================================================
    VPSS / VENC BIND HELPERS
    ============================================================================ */
 
-static int sdk_video_bind_vpss_venc(int chn, VENC_CHN vencChn) {
+static int video_bind_vpss_venc(int chn, VENC_CHN vencChn) {
     MPP_CHN_S src, dst;
     memset(&src, 0, sizeof(src)); memset(&dst, 0, sizeof(dst));
     src.enModId = HI_ID_VPSS; src.s32DevId = g_vpssGrp; src.s32ChnId = g_vpssChn[chn];
@@ -173,7 +144,7 @@ static int sdk_video_bind_vpss_venc(int chn, VENC_CHN vencChn) {
     return (HI_MPI_SYS_Bind(&src, &dst) == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
-static int sdk_video_unbind_vpss_venc(int chn, VENC_CHN vencChn) {
+static int video_unbind_vpss_venc(int chn, VENC_CHN vencChn) {
     MPP_CHN_S src, dst;
     memset(&src, 0, sizeof(src)); memset(&dst, 0, sizeof(dst));
     src.enModId = HI_ID_VPSS; src.s32DevId = g_vpssGrp; src.s32ChnId = g_vpssChn[chn];
@@ -181,7 +152,7 @@ static int sdk_video_unbind_vpss_venc(int chn, VENC_CHN vencChn) {
     return (HI_MPI_SYS_UnBind(&src, &dst) == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
-int sdk_video_bind_vi_vpss(void) {
+int video_bind_vi_vpss(void) {
     MPP_CHN_S src, dst;
     VI_DEV viDev = 0; VI_PIPE viPipe = 0; VI_CHN viChn = 0;
     memset(&src, 0, sizeof(src)); memset(&dst, 0, sizeof(dst));
@@ -191,7 +162,7 @@ int sdk_video_bind_vi_vpss(void) {
     return (HI_MPI_SYS_Bind(&src, &dst) == HI_SUCCESS) ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
-int sdk_video_unbind_vi_vpss(void) {
+int video_unbind_vi_vpss(void) {
     MPP_CHN_S src, dst;
     VI_DEV viDev = 0; VI_PIPE viPipe = 0; VI_CHN viChn = 0;
     memset(&src, 0, sizeof(src)); memset(&dst, 0, sizeof(dst));
@@ -206,9 +177,9 @@ int sdk_video_unbind_vi_vpss(void) {
    CHANNEL LIFECYCLE
    ============================================================================ */
 
-static void sdk_video_shutdown_channel(int chn) {
+static void video_shutdown_channel(int chn) {
     if (chn < 0 || chn > 1) return;
-    sdk_video_unbind_vpss_venc(chn, g_vencChn[chn]);
+    video_unbind_vpss_venc(chn, g_vencChn[chn]);
     HI_MPI_VENC_StopRecvFrame(g_vencChn[chn]);
     HI_MPI_VENC_DestroyChn(g_vencChn[chn]);
     g_videoStarted[chn] = 0;
@@ -216,20 +187,20 @@ static void sdk_video_shutdown_channel(int chn) {
 
 /* Constant-quality (FIXQP) quantizers: the configured value is the P-frame QP
    (0-51, lower = better); I frames get 3 less, like the former fixed 20/23. */
-static HI_U32 sdk_video_pqp(uint32_t qp) { return qp > 51 ? 51 : qp; }
-static HI_U32 sdk_video_iqp(uint32_t qp) { qp = sdk_video_pqp(qp); return qp > 3 ? qp - 3 : 0; }
+static HI_U32 video_pqp(uint32_t qp) { return qp > 51 ? 51 : qp; }
+static HI_U32 video_iqp(uint32_t qp) { qp = video_pqp(qp); return qp > 3 ? qp - 3 : 0; }
 
-static int sdk_video_create_venc_channel(VENC_CHN vencChn,
+static int video_create_venc_channel(VENC_CHN vencChn,
                                           LOCALSDK_VIDEO_OPTIONS *options, int jpeg) {
     VENC_CHN_ATTR_S attr;
     SIZE_S stSize;
     HI_S32 result;
 
-    if (!options || sdk_video_resolution_to_size(options->resolution, &stSize) != LOCALSDK_OK)
+    if (!options || video_resolution_to_size(options->resolution, &stSize) != LOCALSDK_OK)
         return LOCALSDK_ERROR;
 
     memset(&attr, 0, sizeof(attr));
-    PAYLOAD_TYPE_E enType = sdk_video_payload_type(options->payload, jpeg);
+    PAYLOAD_TYPE_E enType = video_payload_type(options->payload, jpeg);
 
     attr.stVencAttr.enType         = enType;
     attr.stVencAttr.u32MaxPicWidth  = stSize.u32Width;
@@ -259,8 +230,8 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn,
             attr.stRcAttr.stH264FixQp.u32Gop            = options->gop ? options->gop : options->fps;
             attr.stRcAttr.stH264FixQp.u32SrcFrameRate   = options->fps;
             attr.stRcAttr.stH264FixQp.fr32DstFrameRate  = options->fps;
-            attr.stRcAttr.stH264FixQp.u32IQp = sdk_video_iqp(options->qp);
-            attr.stRcAttr.stH264FixQp.u32PQp = sdk_video_pqp(options->qp);
+            attr.stRcAttr.stH264FixQp.u32IQp = video_iqp(options->qp);
+            attr.stRcAttr.stH264FixQp.u32PQp = video_pqp(options->qp);
         } else {
             attr.stRcAttr.enRcMode                       = VENC_RC_MODE_H264CBR;
             attr.stRcAttr.stH264Cbr.u32Gop              = options->gop ? options->gop : options->fps;
@@ -285,8 +256,8 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn,
             attr.stRcAttr.stH265FixQp.u32Gop            = options->gop ? options->gop : options->fps;
             attr.stRcAttr.stH265FixQp.u32SrcFrameRate   = options->fps;
             attr.stRcAttr.stH265FixQp.fr32DstFrameRate  = options->fps;
-            attr.stRcAttr.stH265FixQp.u32IQp = sdk_video_iqp(options->qp);
-            attr.stRcAttr.stH265FixQp.u32PQp = sdk_video_pqp(options->qp);
+            attr.stRcAttr.stH265FixQp.u32IQp = video_iqp(options->qp);
+            attr.stRcAttr.stH265FixQp.u32PQp = video_pqp(options->qp);
         } else {
             attr.stRcAttr.enRcMode                       = VENC_RC_MODE_H265CBR;
             attr.stRcAttr.stH265Cbr.u32Gop              = options->gop ? options->gop : options->fps;
@@ -306,7 +277,7 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn,
 
     result = HI_MPI_VENC_CreateChn(vencChn, &attr);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] VENC_CreateChn(%d) failed: 0x%x\n", vencChn, result);
+        video_log("[sdk][video] VENC_CreateChn(%d) failed: 0x%x\n", vencChn, result);
         return LOCALSDK_ERROR;
     }
 
@@ -314,7 +285,7 @@ static int sdk_video_create_venc_channel(VENC_CHN vencChn,
         VENC_RECV_PIC_PARAM_S recv = { .s32RecvPicNum = -1 };
         result = HI_MPI_VENC_StartRecvFrame(vencChn, &recv);
         if (result != HI_SUCCESS) {
-            sdk_log("[sdk][video] StartRecvFrame(%d) failed: 0x%x\n", vencChn, result);
+            video_log("[sdk][video] StartRecvFrame(%d) failed: 0x%x\n", vencChn, result);
             HI_MPI_VENC_DestroyChn(vencChn);
             return LOCALSDK_ERROR;
         }
@@ -389,7 +360,7 @@ static int video_sys_init(void) {
             BOARD_WIDTH, BOARD_HEIGHT, g_mainWrapBufLine,
             PIXEL_FORMAT_YVU_SEMIPLANAR_420,
             DATA_BITWIDTH_8, COMPRESS_MODE_NONE, DEFAULT_ALIGN);
-        sdk_log("[sdk][video] wrap: line=%u size=%u\n",
+        video_log("[sdk][video] wrap: line=%u size=%u\n",
                 g_mainWrapBufLine, g_mainWrapBufSize);
     }
 
@@ -400,26 +371,26 @@ static int video_sys_init(void) {
     stVbConf.u32MaxPoolCnt = 2;
     stVbConf.astCommPool[0].u64BlkSize = (g_mainWrapBufSize > 0)
         ? g_mainWrapBufSize
-        : sdk_calc_yuv420_blk_size(BOARD_WIDTH, BOARD_HEIGHT);
+        : video_calc_yuv420_blk_size(BOARD_WIDTH, BOARD_HEIGHT);
     stVbConf.astCommPool[0].u32BlkCnt  = g_board_cfg->vb_main_blk_cnt;
-    stVbConf.astCommPool[1].u64BlkSize = sdk_calc_yuv420_blk_size(BOARD_SUB_WIDTH, BOARD_SUB_HEIGHT);
+    stVbConf.astCommPool[1].u64BlkSize = video_calc_yuv420_blk_size(BOARD_SUB_WIDTH, BOARD_SUB_HEIGHT);
     stVbConf.astCommPool[1].u32BlkCnt  = g_board_cfg->vb_sub_blk_cnt;
 
     video_force_cleanup();
 
     result = HI_MPI_VB_SetConfig(&stVbConf);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] VB_SetConfig failed: 0x%x\n", result);
+        video_log("[sdk][video] VB_SetConfig failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
     result = HI_MPI_VB_Init();
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] VB_Init failed: 0x%x\n", result);
+        video_log("[sdk][video] VB_Init failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
     result = HI_MPI_SYS_Init();
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] SYS_Init failed: 0x%x\n", result);
+        video_log("[sdk][video] SYS_Init failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
 
@@ -429,7 +400,7 @@ static int video_sys_init(void) {
     stVIVPSSMode.aenMode[0] = BOARD_VIVPSS_MODE;
     result = HI_MPI_SYS_SetVIVPSSMode(&stVIVPSSMode);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] SetVIVPSSMode failed: 0x%x\n", result);
+        video_log("[sdk][video] SetVIVPSSMode failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
     return LOCALSDK_OK;
@@ -455,7 +426,7 @@ static int video_vpss_init(void) {
 
     result = HI_MPI_VPSS_CreateGrp(g_vpssGrp, &grpAttr);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] VPSS_CreateGrp failed: 0x%x\n", result);
+        video_log("[sdk][video] VPSS_CreateGrp failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
     /* StartGrp and VI→VPSS bind deferred to video_create_channel() after
@@ -468,11 +439,11 @@ static int video_create_channel(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     SIZE_S stSize;
     HI_S32 result;
 
-    if (chn < 0 || chn > 3 || !options) return LOCALSDK_ERROR;
-    if (sdk_video_resolution_to_size(options->resolution, &stSize) != LOCALSDK_OK)
+    if (chn < 0 || chn > 1 || !options) return LOCALSDK_ERROR;
+    if (video_resolution_to_size(options->resolution, &stSize) != LOCALSDK_OK)
         return LOCALSDK_ERROR;
 
-    sdk_log("[sdk][video] Creating VPSS chn %d (%ux%u)\n",
+    video_log("[sdk][video] Creating VPSS chn %d (%ux%u)\n",
             chn, stSize.u32Width, stSize.u32Height);
 
     memset(&chnAttr, 0, sizeof(chnAttr));
@@ -495,7 +466,7 @@ static int video_create_channel(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
 
     result = HI_MPI_VPSS_SetChnAttr(g_vpssGrp, g_vpssChn[chn], &chnAttr);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] SetChnAttr failed: 0x%x\n", result);
+        video_log("[sdk][video] SetChnAttr failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
 
@@ -508,15 +479,15 @@ static int video_create_channel(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
         };
         result = HI_MPI_VPSS_SetChnBufWrapAttr(g_vpssGrp, g_vpssChn[chn], &wrapAttr);
         if (result != HI_SUCCESS)
-            sdk_log("[sdk][video] SetChnBufWrapAttr failed: 0x%x\n", result);
+            video_log("[sdk][video] SetChnBufWrapAttr failed: 0x%x\n", result);
         else
-            sdk_log("[sdk][video] wrap chn0: line=%u size=%u\n",
+            video_log("[sdk][video] wrap chn0: line=%u size=%u\n",
                     g_mainWrapBufLine, g_mainWrapBufSize);
     }
 
     result = HI_MPI_VPSS_EnableChn(g_vpssGrp, g_vpssChn[chn]);
     if (result != HI_SUCCESS) {
-        sdk_log("[sdk][video] EnableChn failed: 0x%x\n", result);
+        video_log("[sdk][video] EnableChn failed: 0x%x\n", result);
         return LOCALSDK_ERROR;
     }
 
@@ -526,42 +497,39 @@ static int video_create_channel(int chn, LOCALSDK_VIDEO_OPTIONS *options) {
     if (chn == 1) {
         result = HI_MPI_VPSS_StartGrp(g_vpssGrp);
         if (result != HI_SUCCESS) {
-            sdk_log("[sdk][video] StartGrp failed: 0x%x\n", result);
+            video_log("[sdk][video] StartGrp failed: 0x%x\n", result);
             return LOCALSDK_ERROR;
         }
-        result = sdk_video_bind_vi_vpss();
+        result = video_bind_vi_vpss();
         if (result != LOCALSDK_OK) {
-            sdk_log("[sdk][video] VI→VPSS bind failed\n");
+            video_log("[sdk][video] VI→VPSS bind failed\n");
             HI_MPI_VPSS_StopGrp(g_vpssGrp);
             HI_MPI_VPSS_DestroyGrp(g_vpssGrp);
             return LOCALSDK_ERROR;
         }
-        sdk_log("[sdk][video] VPSS started, VI→VPSS bound\n");
+        video_log("[sdk][video] VPSS started, VI→VPSS bound\n");
     }
 
-    sdk_log("[sdk][video] Channel %d created\n", chn);
+    video_log("[sdk][video] Channel %d created\n", chn);
     return LOCALSDK_OK;
 }
 
 static int video_start_channel(int chn) {
-    LOCALSDK_VIDEO_OPTIONS *options = sdk_video_get_options(chn);
+    LOCALSDK_VIDEO_OPTIONS *options = video_get_options(chn);
     HI_S32 result;
 
-    if (chn < 0 || chn > 3 || !options) return LOCALSDK_ERROR;
+    if (chn < 0 || chn > 1 || !options) return LOCALSDK_ERROR;
 
-    result = sdk_video_create_venc_channel(g_vencChn[chn], options, 0);
+    result = video_create_venc_channel(g_vencChn[chn], options, 0);
     if (result != LOCALSDK_OK) return LOCALSDK_ERROR;
 
-    result = sdk_video_bind_vpss_venc(chn, g_vencChn[chn]);
+    result = video_bind_vpss_venc(chn, g_vencChn[chn]);
     if (result != LOCALSDK_OK) {
         HI_MPI_VENC_StopRecvFrame(g_vencChn[chn]);
         HI_MPI_VENC_DestroyChn(g_vencChn[chn]);
-        sdk_log("[sdk][video] VPSS→VENC bind failed for chn %d\n", chn);
+        video_log("[sdk][video] VPSS→VENC bind failed for chn %d\n", chn);
         return LOCALSDK_ERROR;
     }
-
-    if (g_algoRegisterCb && chn == LOCALSDK_VIDEO_SECONDARY_CHANNEL)
-        g_algoRegisterCb();
 
     HI_MPI_VENC_RequestIDR(g_vencChn[chn], HI_TRUE);
     g_videoStarted[chn] = 1;
@@ -577,7 +545,7 @@ static VideoRunArg g_videoRunArgs[2] = {{0}, {1}};
 
 #define VIDEO_RUN_PACK_MAX 16
 
-static void *sdk_video_run_thread(void *arg) {
+static void *video_run_thread(void *arg) {
     thread_set_name("video-run");
     VideoRunArg *a = (VideoRunArg *)arg;
     int chn = a->chn;
@@ -595,7 +563,11 @@ static void *sdk_video_run_thread(void *arg) {
         tv.tv_sec = 1; tv.tv_usec = 0;
 
         int sel = select(vencFd + 1, &read_fds, NULL, NULL, &tv);
-        if (sel < 0) break;
+        if (sel < 0) {
+            if (errno == EINTR) continue;   /* a signal is not the end of the stream */
+            LOGGER(LOGGER_LEVEL_ERROR, "[video] channel %d: select() failed (%s), stream thread stopped", chn, strerror(errno));
+            break;
+        }
         if (sel == 0 || !FD_ISSET(vencFd, &read_fds)) continue;
 
         VENC_CHN_STATUS_S stStat;
@@ -661,7 +633,7 @@ static int h26x_capture_secondary_channel(LOCALSDK_H26X_FRAME_INFO *frameInfo) {
 
 /* Stock localsdk (inner_set_default_vencModParam) runs the encoders in
  * MiniBufMode: without it the drivers reject the reduced stream buffers of
- * sdk_video_create_venc_channel (w*h/4 H264, w*h/2 H265) with ILLEGAL_PARAM.
+ * video_create_venc_channel (w*h/4 H264, w*h/2 H265) with ILLEGAL_PARAM.
  * The setting is kernel-side (it outlives the process) and is only accepted
  * while no VENC channel exists. */
 static void video_set_venc_mod_params(void) {
@@ -673,7 +645,7 @@ static void video_set_venc_mod_params(void) {
         mod.stH264eModParam.u32H264eMiniBufMode = 1;
         mod.stH264eModParam.u32H264ePowerSaveEn = 0;
         if (HI_MPI_VENC_SetModParam(&mod) != HI_SUCCESS)
-            sdk_log("[sdk][video] SetModParam(H264E) failed\n");
+            video_log("[sdk][video] SetModParam(H264E) failed\n");
     }
 
     memset(&mod, 0, sizeof(mod));
@@ -682,7 +654,7 @@ static void video_set_venc_mod_params(void) {
         mod.stH265eModParam.u32H265eMiniBufMode = 1;
         mod.stH265eModParam.u32H265ePowerSaveEn = 0;
         if (HI_MPI_VENC_SetModParam(&mod) != HI_SUCCESS)
-            sdk_log("[sdk][video] SetModParam(H265E) failed\n");
+            video_log("[sdk][video] SetModParam(H265E) failed\n");
     }
 
     memset(&mod, 0, sizeof(mod));
@@ -690,7 +662,7 @@ static void video_set_venc_mod_params(void) {
     if (HI_MPI_VENC_GetModParam(&mod) == HI_SUCCESS) {
         mod.stJpegeModParam.u32JpegeMiniBufMode = 1;
         if (HI_MPI_VENC_SetModParam(&mod) != HI_SUCCESS)
-            sdk_log("[sdk][video] SetModParam(JPEGE) failed\n");
+            video_log("[sdk][video] SetModParam(JPEGE) failed\n");
     }
 }
 
@@ -766,7 +738,7 @@ bool video_init(void) {
     }
     g_videoRunning[LOCALSDK_VIDEO_PRIMARY_CHANNEL] = 1;
     if (pthread_create(&g_videoRunThread[LOCALSDK_VIDEO_PRIMARY_CHANNEL], NULL,
-                       sdk_video_run_thread,
+                       video_run_thread,
                        &g_videoRunArgs[LOCALSDK_VIDEO_PRIMARY_CHANNEL]) != 0) {
         LOGGER(LOGGER_LEVEL_ERROR, "pthread_create(primary) error!");
         result = false; goto fail;
@@ -807,7 +779,7 @@ bool video_init(void) {
     }
     g_videoRunning[LOCALSDK_VIDEO_SECONDARY_CHANNEL] = 1;
     if (pthread_create(&g_videoRunThread[LOCALSDK_VIDEO_SECONDARY_CHANNEL], NULL,
-                       sdk_video_run_thread,
+                       video_run_thread,
                        &g_videoRunArgs[LOCALSDK_VIDEO_SECONDARY_CHANNEL]) != 0) {
         LOGGER(LOGGER_LEVEL_ERROR, "pthread_create(secondary) error!");
         result = false; goto fail;
@@ -834,7 +806,7 @@ bool video_free(void) {
                 g_videoRunThread[chn] = 0;
             }
         }
-        sdk_video_shutdown_channel(chn);
+        video_shutdown_channel(chn);
     }
 
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed (result = %s).", result ? "true" : "false");
@@ -842,7 +814,7 @@ bool video_free(void) {
 }
 
 void video_deinit(void) {
-    sdk_video_unbind_vi_vpss();
+    video_unbind_vi_vpss();
     HI_MPI_VPSS_StopGrp(g_vpssGrp);
     HI_MPI_VPSS_DestroyGrp(g_vpssGrp);
     pthread_mutex_destroy(&g_videoBrightLock);
@@ -852,12 +824,24 @@ void video_deinit(void) {
 }
 
 int video_force_i_frame(int chn) {
-    if (chn < 0 || chn > 3) return LOCALSDK_ERROR;
+    if (chn < 0 || chn > 1) return LOCALSDK_ERROR;
     return (HI_MPI_VENC_RequestIDR(g_vencChn[chn], HI_TRUE) == HI_SUCCESS)
         ? LOCALSDK_OK : LOCALSDK_ERROR;
 }
 
+/* One snapshot at a time: they all use the same temporary VENC channel, so two
+   concurrent calls (MQTT command + CLI) would fight over it. */
+static int video_get_jpeg_locked(int chn, char *file);
+static pthread_mutex_t g_jpegLock = PTHREAD_MUTEX_INITIALIZER;
+
 int video_get_jpeg(int chn, char *file) {
+    pthread_mutex_lock(&g_jpegLock);
+    int ret = video_get_jpeg_locked(chn, file);
+    pthread_mutex_unlock(&g_jpegLock);
+    return ret;
+}
+
+static int video_get_jpeg_locked(int chn, char *file) {
     FILE *fp;
     VENC_STREAM_S stStream;
     VENC_CHN_STATUS_S stStat;
@@ -869,10 +853,12 @@ int video_get_jpeg(int chn, char *file) {
     SIZE_S stSize;
     VENC_CHN snapChn = 3;
 
-    if (chn < 0 || chn > 3 || !file) return LOCALSDK_ERROR;
+    if (chn < 0 || chn > 1 || !file) return LOCALSDK_ERROR;
 
-    stSize.u32Width  = (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) ? 1920 : 640;
-    stSize.u32Height = (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) ? 1080 : 360;
+    // Snapshot size follows the channel's configured resolution
+    LOCALSDK_VIDEO_OPTIONS *snapOpts = video_get_options(chn);
+    if (!snapOpts || video_resolution_to_size((int)snapOpts->resolution, &stSize) != LOCALSDK_OK)
+        return LOCALSDK_ERROR;
 
     fp = fopen(file, "wb");
     if (!fp) return LOCALSDK_ERROR;
@@ -896,7 +882,7 @@ int video_get_jpeg(int chn, char *file) {
     result = HI_MPI_VENC_CreateChn(snapChn, &jpegAttr);
     if (result != HI_SUCCESS) { fclose(fp); return LOCALSDK_ERROR; }
 
-    if (sdk_video_bind_vpss_venc(chn, snapChn) != LOCALSDK_OK) {
+    if (video_bind_vpss_venc(chn, snapChn) != LOCALSDK_OK) {
         HI_MPI_VENC_DestroyChn(snapChn); fclose(fp); return LOCALSDK_ERROR;
     }
 
@@ -904,14 +890,14 @@ int video_get_jpeg(int chn, char *file) {
     recv.s32RecvPicNum = 1;
     result = HI_MPI_VENC_StartRecvFrame(snapChn, &recv);
     if (result != HI_SUCCESS) {
-        sdk_video_unbind_vpss_venc(chn, snapChn);
+        video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn); fclose(fp); return LOCALSDK_ERROR;
     }
 
     vencFd = HI_MPI_VENC_GetFd(snapChn);
     if (vencFd < 0) {
         HI_MPI_VENC_StopRecvFrame(snapChn);
-        sdk_video_unbind_vpss_venc(chn, snapChn);
+        video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn); fclose(fp); return LOCALSDK_ERROR;
     }
 
@@ -920,14 +906,14 @@ int video_get_jpeg(int chn, char *file) {
     result = select(vencFd + 1, &read_fds, NULL, NULL, &timeout);
     if (result <= 0 || !FD_ISSET(vencFd, &read_fds)) {
         HI_MPI_VENC_StopRecvFrame(snapChn);
-        sdk_video_unbind_vpss_venc(chn, snapChn);
+        video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn); fclose(fp); return LOCALSDK_ERROR;
     }
 
     memset(&stStat, 0, sizeof(stStat));
     if (HI_MPI_VENC_QueryStatus(snapChn, &stStat) != HI_SUCCESS || stStat.u32CurPacks == 0) {
         HI_MPI_VENC_StopRecvFrame(snapChn);
-        sdk_video_unbind_vpss_venc(chn, snapChn);
+        video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn); fclose(fp); return LOCALSDK_ERROR;
     }
 
@@ -935,7 +921,7 @@ int video_get_jpeg(int chn, char *file) {
     stStream.pstPack = malloc(sizeof(VENC_PACK_S) * stStat.u32CurPacks);
     if (!stStream.pstPack) {
         HI_MPI_VENC_StopRecvFrame(snapChn);
-        sdk_video_unbind_vpss_venc(chn, snapChn);
+        video_unbind_vpss_venc(chn, snapChn);
         HI_MPI_VENC_DestroyChn(snapChn); fclose(fp); return LOCALSDK_ERROR;
     }
     stStream.u32PackCount = stStat.u32CurPacks;
@@ -948,27 +934,15 @@ int video_get_jpeg(int chn, char *file) {
 
     free(stStream.pstPack);
     HI_MPI_VENC_StopRecvFrame(snapChn);
-    sdk_video_unbind_vpss_venc(chn, snapChn);
+    video_unbind_vpss_venc(chn, snapChn);
     HI_MPI_VENC_DestroyChn(snapChn);
     fclose(fp);
     return LOCALSDK_OK;
 }
 
 int video_set_encode_callback(int chn, int (*cb)(LOCALSDK_H26X_FRAME_INFO *)) {
-    if (chn < 0 || chn > 3) return LOCALSDK_ERROR;
+    if (chn < 0 || chn > 1) return LOCALSDK_ERROR;
     g_encCb[chn] = cb;
-    return LOCALSDK_OK;
-}
-
-int video_set_algo_register_callback(int (*cb)(void)) {
-    g_algoRegisterCb = cb;
-    return LOCALSDK_OK;
-}
-
-int video_set_kbps(int chn, int kbps) {
-    LOCALSDK_VIDEO_OPTIONS *opts = sdk_video_get_options(chn);
-    if (!opts) return LOCALSDK_ERROR;
-    opts->bitrate = (uint32_t)kbps;
     return LOCALSDK_OK;
 }
 

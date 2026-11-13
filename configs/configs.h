@@ -116,7 +116,4 @@ extern APPLICATION_CONFIGURATION APP_CFG;
 // Init application configs
 bool configs_init(char *filename);
 
-// Free application configs
-bool configs_free();
-
 #endif

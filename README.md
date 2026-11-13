@@ -29,8 +29,7 @@ closed libraries.
 - Replace the vendor boot loader `load3518ev300` (pinmux + module load) for full autonomy.
 - Local MP4 recording to SD card on motion / humanoid events.
 - Replace clear-text FTP/telnet with SSH (dropbear).
-- Validate the day dehaze LUT fix (continuation lines of `DehazeLut` indented in the day scene
-  INI, so that `inih` parses them) and compare the day shadows/contrast with the original.
+- Validate the night profile (night scene INI, 3DNR tables, white-balance bypass, grain) against the original.
 - *Possible enhancement (not present in the original firmware):* IVP ROI masking to
   exclude/focus zones for motion/humanoid detection (`hi_ivp_set_roi_attr` +
   `hi_ivp_set_roi_map`) — mechanism confirmed by reverse-engineering, not wired up yet.
@@ -63,9 +62,9 @@ git clone https://github.com/kasitoru/mjsxj02hl_application
 cd mjsxj02hl_application
 ```
 
-4. Update submodules (optional):
+4. Fetch the submodules (needed on a fresh clone; `make update-libs` also pulls and syncs them):
 ```bash
-make update-libs
+git submodule update --init --recursive
 ```
 
 5. Build application:
@@ -73,15 +72,15 @@ make update-libs
 make
 ```
 
-To save time, you can disable the build of external shared libraries:
-
-```bash
-make SKIP_SHARED_LIBS=ON
-```
-
-...and skip step №4.
+Every `make` is a full rebuild (it also rebuilds paho.mqtt.c and ipctool), so expect a few minutes.
+The result is a single self-contained binary, `bin/mjsxj02hl`, plus `bin/mjsxj02hl.map` (link map, to
+decode a crash address together with the `-g` debug info). No shared library is produced any more, so the
+old `SKIP_SHARED_LIBS` option is now a no-op.
 
 ## Configuration
+
+Numeric options outside their documented range (ports, QoS, QP, volumes, sensitivities, intervals, night
+mode) are clamped to the nearest valid value, with a warning in the log. Passwords are never written to the log.
 
 Default config `/configs/mjsxj02hl.conf`:
 

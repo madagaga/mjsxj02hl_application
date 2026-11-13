@@ -9,6 +9,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "./../thread_name.h"
 #include "./osd.h"                 /* owns all LOCALSDK_OSD_* and LOCALSDK_ALARM_* types */

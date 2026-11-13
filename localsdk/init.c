@@ -22,13 +22,13 @@
 
 // Read file into string
 static char *get_file_contents(char *filename) {
-    char *file_contents = "";
+    char *file_contents = NULL;
     FILE *file_stream;
-    if(file_stream = fopen(filename, "r")) {
+    if((file_stream = fopen(filename, "r"))) {
         if(fseek(file_stream, 0, SEEK_END) != -1) {
             long contents_size = ftell(file_stream) + 1;
             if(fseek(file_stream, 0, SEEK_SET) != -1) {
-                if(file_contents = malloc(contents_size)) {
+                if((file_contents = malloc(contents_size))) {
                     memset(file_contents, '\0', contents_size);
                     fread(file_contents, 1, contents_size, file_stream);
                     if(ferror(file_stream)) LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "fread()");
@@ -37,15 +37,19 @@ static char *get_file_contents(char *filename) {
         } else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "fseek(SEEK_END)");
         fclose(file_stream);
     } else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "fopen()");
+    // Callers free() the result: never hand back a string literal
+    if(file_contents == NULL) file_contents = calloc(1, 1);
     return file_contents;
 }
 
 // Removes all non-printable characters from string
 char *prepare_string(char *string) {
-    char *prepared_string = "";
-    if(string != NULL) {
+    char *prepared_string = NULL;
+    if(string == NULL) {
+        prepared_string = calloc(1, 1); // callers free() the result
+    } else {
         size_t length = strlen(string) + 1;
-        if(prepared_string = malloc(length)) {
+        if((prepared_string = malloc(length))) {
             memset(prepared_string, '\0', length);
             size_t j = 0;
             for(size_t i = 0; i<length; i++) {
@@ -69,8 +73,9 @@ char *firmware_version() {
 // Get device id
 char *device_id() {
     size_t length = 64;
-    char *buffer = "";
-    if(buffer = malloc(length)) {
+    char *buffer = NULL;
+    if((buffer = malloc(length))) {
+        buffer[0] = '\0'; // stays a valid (empty) string if the first register read fails
         size_t size = 0;
         // https://github.com/OpenIPC/ipctool/blob/5deac9f4f1fd2913b8b34a2d0a0b511e85e4055d/src/hal_hisi.c#L1288-L1300
         for(uint32_t address = 0x12020414; address >= 0x12020400; address -= 4) {

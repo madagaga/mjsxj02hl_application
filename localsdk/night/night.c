@@ -16,6 +16,7 @@
 #include "./../../mqtt/mqtt.h"
 
 #include "mpi_isp.h"
+#include "mpi_ae.h"
 #include "hi_comm_isp.h"
 
 /* ISP AE settle time before first luma sample (seconds). */

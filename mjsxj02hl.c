@@ -179,6 +179,9 @@ int main(int argc, char **argv) {
     LOGGER(LOGGER_LEVEL_FORCED, "Device ID: %s", dev_id);
     free(dev_id);
     
+    // A peer closing a socket (RTSP TCP client, MQTT broker) must not kill the process
+    signal(SIGPIPE, SIG_IGN);
+
     // Main thread
     if(configs_init(config_filename)) { // Init configs
         LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "configs_init()");

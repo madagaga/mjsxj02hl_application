@@ -16,6 +16,9 @@
 #include "mpi_adec.h"
 #include "mpi_sys.h"
 
+/* MPP error code "AO device already exists" (the SDK headers do not name it) */
+#define SPEAKER_ERR_AO_EXIST ((HI_S32)0xa0158009)
+
 /* ── Globals ─────────────────────────────────────────────────────────────── */
 
 static ADEC_CHN g_adecChn = 0;
@@ -66,7 +69,7 @@ static int speaker_mpp_start(void)
 
     /* AO channel may already be enabled by audio_init(); treat EXIST as OK */
     result = HI_MPI_AO_EnableChn(ao_dev, ao_chn);
-    if (result != HI_SUCCESS && result != (HI_S32)0xa0158009 /* HI_ERR_AO_EXIST */) {
+    if (result != HI_SUCCESS && result != SPEAKER_ERR_AO_EXIST) {
         LOGGER(LOGGER_LEVEL_ERROR, "[speaker] AO_EnableChn failed: 0x%x", result);
         return LOCALSDK_ERROR;
     }
@@ -183,6 +186,12 @@ bool speaker_play_media(char *filename, int type)
             char *buffer = malloc(buffer_size);
             if (buffer != NULL) {
                 size_t length = fread(buffer, 1, buffer_size, media);
+                if (length == 0) {
+                    /* Nothing left (file size a multiple of the buffer, or a read error):
+                       feeding an empty chunk fails and used to retry for 30 s */
+                    free(buffer);
+                    break;
+                }
                 while (true) {
                     if (type == LOCALSDK_SPEAKER_G711_TYPE) {
                         if (speaker_feed_g711(buffer, length) == LOCALSDK_OK || error_counter >= 300) break;
@@ -195,7 +204,11 @@ bool speaker_play_media(char *filename, int type)
                     if (speaker_status_media() == SPEAKER_MEDIA_STOPPING) break;
                 }
                 free(buffer);
-            } else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "malloc(buffer_size)");
+            } else {
+                LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "malloc(buffer_size)");
+                result &= false;
+                break; /* retrying would spin without reading */
+            }
             if (speaker_status_media() == SPEAKER_MEDIA_STOPPED)  playback_status = SPEAKER_MEDIA_STOPPING;
             if (speaker_status_media() == SPEAKER_MEDIA_STOPPING) break;
         }

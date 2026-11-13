@@ -252,10 +252,39 @@ static int parser_handler(void* cfg, const char *section, const char *name, cons
     // unknown
     } else result &= false;
 
-    if(result) LOGGER(LOGGER_LEVEL_INFO, "Parse success. Section: %s, name: %s, value: %s", section, name, value);
-    else LOGGER(LOGGER_LEVEL_WARNING, "Parse error! Section: %s, name: %s, value: %s", section, name, value);
+    // Never write secrets to the log file
+    const char *shown = (strcmp(name, "password") == 0) ? "********" : value;
+    if(result) LOGGER(LOGGER_LEVEL_INFO, "Parse success. Section: %s, name: %s, value: %s", section, name, shown);
+    else LOGGER(LOGGER_LEVEL_WARNING, "Parse error! Section: %s, name: %s, value: %s", section, name, shown);
     
     return result;
+}
+
+// Clamp a value into [lo, hi]; out-of-range input is corrected, not rejected
+static void clamp_int(const char *key, int *value, int lo, int hi) {
+    if(*value >= lo && *value <= hi) return;
+    int fixed = (*value < lo) ? lo : hi;
+    LOGGER(LOGGER_LEVEL_WARNING, "Config %s=%d out of range [%d, %d], using %d.", key, *value, lo, hi, fixed);
+    *value = fixed;
+}
+
+// Bounds on numeric options (ranges as documented in the defaults above)
+static void configs_validate(APPLICATION_CONFIGURATION *c) {
+    clamp_int("video.gop", &c->video.gop, 1, 1000);
+    clamp_int("video.primary_qp", &c->video.primary_qp, 0, 51);
+    clamp_int("video.secondary_qp", &c->video.secondary_qp, 0, 51);
+    clamp_int("audio.volume", &c->audio.volume, 0, 100);
+    clamp_int("speaker.volume", &c->speaker.volume, 0, 100);
+    clamp_int("alarm.motion_sens", &c->alarm.motion_sens, 1, 255);
+    clamp_int("alarm.humanoid_sens", &c->alarm.humanoid_sens, 1, 255);
+    clamp_int("rtsp.port", &c->rtsp.port, 1, 65535);
+    clamp_int("mqtt.port", &c->mqtt.port, 1, 65535);
+    clamp_int("mqtt.qos", &c->mqtt.qos, 0, 2);
+    // A zero or negative interval would turn a wait loop into a busy loop
+    clamp_int("mqtt.reconnection_interval", &c->mqtt.reconnection_interval, 1, 86400);
+    clamp_int("mqtt.periodical_interval", &c->mqtt.periodical_interval, 1, 86400);
+    clamp_int("night.mode", &c->night.mode, 0, 2);
+    clamp_int("night.gray", &c->night.gray, 0, 2);
 }
 
 // Init application configs
@@ -265,21 +294,11 @@ bool configs_init(char *filename) {
     
     // Read values from config file
     LOGGER(LOGGER_LEVEL_INFO, "Filename: %s", filename);
-    if(result &= (ini_parse(filename, parser_handler, &APP_CFG) >= 0)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "ini_parse()");
-    else {
-        LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "ini_parse()");
-        if(configs_free()) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "configs_free()");
-        else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "configs_free()");
-    }
-    
+    if(result &= (ini_parse(filename, parser_handler, &APP_CFG) >= 0)) {
+        LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "ini_parse()");
+        configs_validate(&APP_CFG);
+    } else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "ini_parse()");
+
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed (result = %s).", (result ? "true" : "false"));
     return result;
-}
-
-// Free application configs
-bool configs_free() {
-    LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
-    LOGGER(LOGGER_LEVEL_DEBUG, "This function is a stub.");
-    LOGGER(LOGGER_LEVEL_DEBUG, "Function completed (result = %s).", "true");
-    return true;
 }

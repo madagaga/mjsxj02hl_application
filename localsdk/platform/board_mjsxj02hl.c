@@ -24,6 +24,7 @@
 #include "mpi_sys.h"
 #include "mpi_vb.h"
 #include "mpi_isp.h"
+#include "mpi_ae.h"
 #include "../sensor/jxf/sensor_jxf22.h"
 #include "../scene/scene.h"
 #include "../../logger/logger.h"
@@ -140,9 +141,9 @@ static int gpio_read(int pin)
     char path[64];
     snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
     FILE *f = fopen(path, "r");
-    if (!f) return 0;
-    int v = 0;
-    fscanf(f, "%d", &v);
+    if (!f) return -1;          /* unreadable is NOT "low": callers must not read it as a press */
+    int v = -1;
+    if (fscanf(f, "%d", &v) != 1) v = -1;
     fclose(f);
     return v;
 }
@@ -240,16 +241,29 @@ static void *button_thread(void *arg)
     (void)arg;
     const board_cfg_t *b = &g_board_mjsxj02hl;
     printf("[SDK-THREAD]dbg: Platform Thread Start...\n");
-    int last_state = 1;
+    /* The button is active low. The callback (factory reset) fires only once the
+       button has been held continuously for the timeout given to
+       board_set_button_callback(), and once per press. An unreadable GPIO or a
+       released button restarts the count, so a glitch or a failing sysfs read
+       (memory pressure) can never trigger it. */
+    const int poll_ms = 50;
+    int held_ms = 0;
+    int fired = 0;
     while (1) {
-        usleep(50000);
-        int v = gpio_read(b->gpio_button_setup);
-        if (v == 0 && last_state == 1) {
-            pthread_mutex_lock(&g_keyMutex);
-            if (g_keyCb) g_keyCb();
-            pthread_mutex_unlock(&g_keyMutex);
+        usleep(poll_ms * 1000);
+        if (gpio_read(b->gpio_button_setup) != 0) {   /* released (1) or unreadable (-1) */
+            held_ms = 0;
+            fired = 0;
+            continue;
         }
-        last_state = v;
+        held_ms += poll_ms;
+        pthread_mutex_lock(&g_keyMutex);
+        int need_ms = g_keyTimeout > 100 ? g_keyTimeout : 100;  /* at least a 100 ms debounce */
+        if (g_keyCb && !fired && held_ms >= need_ms) {
+            fired = 1;
+            g_keyCb();
+        }
+        pthread_mutex_unlock(&g_keyMutex);
     }
     return NULL;
 }
@@ -351,7 +365,6 @@ static void board_ircut_close(void)
 
 static void board_apply_mode(HI_BOOL is_night)
 {
-    const board_cfg_t *b = &g_board_mjsxj02hl;
     if (is_night) {
         /* Switch ISP to night profile first (grayscale + low gain) before IR floods in */
         scene_set_night();

@@ -5,6 +5,9 @@ CCFLAGS = -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations -I./includ
 
 # Application code: optimized, warnings on, debug info and per-function sections (for --gc-sections and the map file)
 APP_FLAGS = -O2 -g -Wall -ffunction-sections -fdata-sections
+
+# RTSP server: self-contained and hot (runs on every packet), same debug/section flags as the rest
+RTSP_FLAGS = -O2 -g -Wall -ffunction-sections -fdata-sections
 LDPATH = /opt/hisi-linux/x86-arm/arm-himix100-linux/target/usr/app/lib
 
 CC  = $(CROSS_COMPILE)gcc
@@ -74,7 +77,7 @@ mkdir-libs:
 update-libs:
 	git submodule sync --recursive
 	git pull --recurse-submodules
-	git submodule update --remote --recursive
+	git submodule update --init --recursive
 
 static-libs: libipchw.a libpaho-mqtt3c.a
 # Nothing is shipped as a shared library any more (only the Hisi SDK and libc)
@@ -144,13 +147,13 @@ rtsp.o: ./rtsp/rtsp.c
 
 # The RTSP server is self-contained; built optimized, it runs on every packet
 rtsp_server.o: ./rtsp/rtsp_server.c
-	$(CC) $(CCFLAGS) -O2 -Wall -c ./rtsp/rtsp_server.c -o $(OUTPUT)/objects/rtsp_server.o
+	$(CC) $(CCFLAGS) $(RTSP_FLAGS) -c ./rtsp/rtsp_server.c -o $(OUTPUT)/objects/rtsp_server.o
 
 rtsp_stream.o: ./rtsp/rtsp_stream.c
-	$(CC) $(CCFLAGS) -O2 -Wall -c ./rtsp/rtsp_stream.c -o $(OUTPUT)/objects/rtsp_stream.o
+	$(CC) $(CCFLAGS) $(RTSP_FLAGS) -c ./rtsp/rtsp_stream.c -o $(OUTPUT)/objects/rtsp_stream.o
 
 rtsp_util.o: ./rtsp/rtsp_util.c
-	$(CC) $(CCFLAGS) -O2 -Wall -c ./rtsp/rtsp_util.c -o $(OUTPUT)/objects/rtsp_util.o
+	$(CC) $(CCFLAGS) $(RTSP_FLAGS) -c ./rtsp/rtsp_util.c -o $(OUTPUT)/objects/rtsp_util.o
 
 sensor.o: ./localsdk/sensor/jxf/sensor_jxf22.c
 	$(CC) $(CCFLAGS) $(APP_FLAGS) -I./localsdk/sensor/jxf -c ./localsdk/sensor/jxf/sensor_jxf22.c -o $(OUTPUT)/objects/sensor.o

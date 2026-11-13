@@ -725,9 +725,13 @@ static void handle_setup(client_t *c, const request_t *req) {
     if (s < 0) { reply(c, req->cseq, "404 Not Found", NULL, NULL); return; }
     if (c->session >= 0 && c->session != s) { reply(c, req->cseq, "459 Aggregate Operation Not Allowed", NULL, NULL); return; }
 
-    int index = (strcmp(track_name, "track1") == 0) ? RTSP_TRACK_AUDIO : RTSP_TRACK_VIDEO;
+    // Only the tracks announced in the SDP exist; an empty name (SETUP on the base URL) means video
+    int index;
+    if (strcmp(track_name, "track1") == 0) index = RTSP_TRACK_AUDIO;
+    else if (track_name[0] == '\0' || strcmp(track_name, "track0") == 0) index = RTSP_TRACK_VIDEO;
+    else { reply(c, req->cseq, "404 Not Found", NULL, NULL); return; }
     rtsp_stream_t *stream = &g_sessions[s].stream[index];
-    if (stream->codec == RTSP_CODEC_NONE || (track_name[0] && strncmp(track_name, "track", 5) != 0)) {
+    if (stream->codec == RTSP_CODEC_NONE) {
         reply(c, req->cseq, "404 Not Found", NULL, NULL);
         return;
     }

@@ -4,6 +4,7 @@
 
 #include <ctype.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include <sys/stat.h>
@@ -56,8 +57,8 @@ char *mqtt_prepare_string(const char *string) {
 // Get clien id
 char *mqtt_client_id() {
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
-    char *client_id = "";
-    
+    char *client_id = NULL;
+
     char *mqtt_topic = mqtt_prepare_string(APP_CFG.mqtt.topic);
     if(mqtt_topic != NULL) {
         LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "mqtt_prepare_string(APP_CFG.mqtt.topic)");
@@ -71,7 +72,7 @@ char *mqtt_client_id() {
                 if(prep_id != NULL) {
                     LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "mqtt_prepare_string(dev_id)");
                     if(asprintf(&client_id, "%s_%s_%s", mqtt_topic, general_name, prep_id) != -1) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "asprintf(client_id)");
-                    else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "asprintf(client_id)");
+                    else { LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "asprintf(client_id)"); client_id = NULL; }
                     free(prep_id);
                 } else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "mqtt_prepare_string(dev_id)");
                 free(dev_id);
@@ -80,7 +81,10 @@ char *mqtt_client_id() {
         } else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "mqtt_prepare_string(APP_CFG.general.name)");
         free(mqtt_topic);
     } else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "mqtt_prepare_string(APP_CFG.mqtt.topic)");
-    
+
+    // Callers free() the result: never hand back a string literal
+    if(client_id == NULL) client_id = calloc(1, 1);
+
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed.");
     return client_id;
 }
@@ -88,16 +92,19 @@ char *mqtt_client_id() {
 // Get full topic
 char *mqtt_fulltopic(const char *topic) {
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
-    char *payload = "";
-    
+    char *payload = NULL;
+
     char *general_name = mqtt_prepare_string(APP_CFG.general.name);
     if(general_name != NULL) {
         LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "mqtt_prepare_string(APP_CFG.general.name)");
         if(asprintf(&payload, "%s/%s/%s", APP_CFG.mqtt.topic, general_name, topic) != -1) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "asprintf(payload)");
-        else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "asprintf(payload)");
+        else { LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "asprintf(payload)"); payload = NULL; }
         free(general_name);
     } else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "mqtt_prepare_string(APP_CFG.general.name)");
-    
+
+    // Callers free() the result: never hand back a string literal
+    if(payload == NULL) payload = calloc(1, 1);
+
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed.");
     return payload;
 }
@@ -293,26 +300,26 @@ static void *mqtt_periodical(void *arg) {
         if(yyjson_mut_obj_add_uint(json_doc, json_root, "free_ram", free_ram)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "yyjson_mut_obj_add_uint(free_ram)");
         else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "yyjson_mut_obj_add_uint(free_ram)");
         // SD-Card memory
-        unsigned long total_sdmem = 0;
-        unsigned long free_sdmem = 0;
+        uint64_t total_sdmem = 0;  // 64-bit: unsigned long is 32-bit on ARM, wraps above 4 GB
+        uint64_t free_sdmem = 0;
         struct statvfs stat_mmc;
         if(statvfs("/mnt/mmc", &stat_mmc) == 0) {
             LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "statvfs(\"/mnt/mmc\")");
-            total_sdmem = (unsigned long) stat_mmc.f_frsize * stat_mmc.f_blocks;
-            free_sdmem = (unsigned long) stat_mmc.f_bsize * stat_mmc.f_bfree;
+            total_sdmem = (uint64_t) stat_mmc.f_frsize * stat_mmc.f_blocks;
+            free_sdmem = (uint64_t) stat_mmc.f_frsize * stat_mmc.f_bfree;
         } else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "statvfs(\"/mnt/mmc\")");
         if(yyjson_mut_obj_add_uint(json_doc, json_root, "total_sdmem", total_sdmem)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "yyjson_mut_obj_add_uint(total_sdmem)");
         else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "yyjson_mut_obj_add_uint(total_sdmem)");
         if(yyjson_mut_obj_add_uint(json_doc, json_root, "free_sdmem", free_sdmem)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "yyjson_mut_obj_add_uint(free_sdmem)");
         else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "yyjson_mut_obj_add_uint(free_sdmem)");
         // Configs memory
-        unsigned long total_configs = 0;
-        unsigned long free_configs = 0;
+        uint64_t total_configs = 0;
+        uint64_t free_configs = 0;
         struct statvfs stat_configs;
         if(statvfs("/configs", &stat_configs) == 0) {
             LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "statvfs(\"/configs\")");
-            total_configs = (unsigned long) stat_configs.f_frsize * stat_configs.f_blocks;
-            free_configs = (unsigned long) stat_configs.f_bsize * stat_configs.f_bfree;
+            total_configs = (uint64_t) stat_configs.f_frsize * stat_configs.f_blocks;
+            free_configs = (uint64_t) stat_configs.f_frsize * stat_configs.f_bfree;
         } else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "statvfs(\"/configs\")");
         if(yyjson_mut_obj_add_uint(json_doc, json_root, "total_configs", total_configs)) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "yyjson_mut_obj_add_uint(total_configs)");
         else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "yyjson_mut_obj_add_uint(total_configs)");
@@ -480,9 +487,12 @@ static int mqtt_message_callback(void *context, char *topicName, int topicLen, M
     yyjson_doc_free(json_doc);
     MQTTClient_freeMessage(&message);
     MQTTClient_free(topicName);
-    
+
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed (result = %s).", (result ? "true" : "false"));
-    return result;
+    // The message and topic are already freed: paho must never see a 0 here, it would
+    // treat the message as unhandled and use the freed pointers again. A failed command
+    // is reported through the log above, not through the return value.
+    return 1;
 }
 
 // Delivery confirmed
