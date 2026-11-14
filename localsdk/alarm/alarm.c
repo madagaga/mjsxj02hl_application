@@ -775,25 +775,29 @@ bool alarm_init(void)
         /* Start IVP humanoid detector on the 640x360 secondary stream */
         if (result &= (ivp_mpp_init(BOARD_SUB_WIDTH, BOARD_SUB_HEIGHT, NULL) == LOCALSDK_OK)) {
             LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "ivp_mpp_init()");
-        } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "ivp_mpp_init()");
 
-        /* Start IVS MD motion detector (same stream, same thread) */
-        if (md_mpp_init(BOARD_SUB_WIDTH, BOARD_SUB_HEIGHT) == LOCALSDK_OK) {
-            LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "md_mpp_init()");
-        } else LOGGER(LOGGER_LEVEL_WARNING, "%s error! (motion detection unavailable)", "md_mpp_init()");
+            /* Start IVS MD motion detector (same stream, same thread) */
+            if (md_mpp_init(BOARD_SUB_WIDTH, BOARD_SUB_HEIGHT) == LOCALSDK_OK) {
+                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "md_mpp_init()");
+            } else LOGGER(LOGGER_LEVEL_WARNING, "%s error! (motion detection unavailable)", "md_mpp_init()");
 
-        if (result &= (ivp_detect_start() == LOCALSDK_OK)) {
-            LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "ivp_detect_start()");
-        } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "ivp_detect_start()");
+            if (result &= (ivp_detect_start() == LOCALSDK_OK)) {
+                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "ivp_detect_start()");
+            } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "ivp_detect_start()");
 
-        /* Register our event dispatch callback */
-        if (result &= (alarm_register_callback(alarm_state_callback) == LOCALSDK_OK)) {
-            LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "alarm_register_callback()");
-            /* Start the state timeout/MQTT thread */
-            if (result &= (pthread_create(&timeout_thread, NULL, alarm_state_timeout, NULL) == 0)) {
-                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "pthread_create(timeout_thread)");
-            } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "pthread_create(timeout_thread)");
-        } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "alarm_register_callback()");
+            /* Register our event dispatch callback */
+            if (result &= (alarm_register_callback(alarm_state_callback) == LOCALSDK_OK)) {
+                LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "alarm_register_callback()");
+                /* Start the state timeout/MQTT thread */
+                if (result &= (pthread_create(&timeout_thread, NULL, alarm_state_timeout, NULL) == 0)) {
+                    LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "pthread_create(timeout_thread)");
+                } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "pthread_create(timeout_thread)");
+            } else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "alarm_register_callback()");
+        } else {
+            /* Without the IVP there is nothing to run: no detection thread on a model that
+               never loaded */
+            LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "ivp_mpp_init()");
+        }
     } else {
         LOGGER(LOGGER_LEVEL_INFO, "Alarm init skipped, because alarms are disabled");
     }
@@ -801,6 +805,9 @@ bool alarm_init(void)
     if (result) alarm_initialized = true;
 
     if (!result) {
+        /* alarm_free() does nothing unless the module counts as initialized: whatever was
+           started before the failure (IVP resource, MD, threads) has to be torn down */
+        alarm_initialized = true;
         if (alarm_free()) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "alarm_free()");
         else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "alarm_free()");
     }
@@ -825,6 +832,9 @@ bool alarm_free(void)
             LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "pthread_cancel(timeout_thread)");
         else
             LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "pthread_cancel(timeout_thread)");
+        /* Wait for it: it may be in the middle of an MQTT send that uses state we free below */
+        pthread_join(timeout_thread, NULL);
+        timeout_thread = 0;
     }
 
     /* Remove event callback */

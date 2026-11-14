@@ -79,6 +79,11 @@ void board_set_mode(HI_BOOL is_night);
 void board_platform_init(void);
 void board_platform_deinit(void);
 
+/* Stop what the board runs on top of the video pipeline (scene thread, IR flood, IR-cut and
+   LED GPIO) via its pfnDeinit. Call it while the pipeline still exists, i.e. before
+   video_deinit() and board_platform_deinit(). Safe after a partial init. */
+void board_platform_stop(void);
+
 /* LED control — orange/blue indicator LEDs.  Called from mjsxj02hl.c. */
 void board_indicator_led(bool orange, bool blue);
 

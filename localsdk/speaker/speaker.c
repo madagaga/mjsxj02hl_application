@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "./speaker.h"
@@ -144,6 +145,28 @@ bool speaker_init(void)
 bool speaker_free(void)
 {
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
+
+    /* A playback thread must notice the stop and leave before its channel disappears */
+    if (speaker_status_media() != SPEAKER_MEDIA_STOPPED) {
+        speaker_stop_media();
+        for (int i = 0; i < 20 && speaker_status_media() != SPEAKER_MEDIA_STOPPED; i++)
+            usleep(100000);
+    }
+
+    /* Undo speaker_mpp_start() / speaker_mpp_init(). Errors are expected (and ignored) when
+       init stopped half way, with nothing bound or created yet. */
+    MPP_CHN_S stSrcChn, stDestChn;
+    memset(&stSrcChn, 0, sizeof(stSrcChn));
+    memset(&stDestChn, 0, sizeof(stDestChn));
+    stSrcChn.enModId   = HI_ID_ADEC;
+    stSrcChn.s32DevId  = 0;
+    stSrcChn.s32ChnId  = g_adecChn;
+    stDestChn.enModId  = HI_ID_AO;
+    stDestChn.s32DevId = audio_get_ao_dev();
+    stDestChn.s32ChnId = audio_get_ao_chn();
+    HI_MPI_SYS_UnBind(&stSrcChn, &stDestChn);
+    HI_MPI_ADEC_DestroyChn(g_adecChn);
+
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed (result = %s).", "true");
     return true;
 }

@@ -27,7 +27,7 @@ typedef struct {
     uint32_t    timestamp_en;
     uint32_t    timestamp_show;
     RGN_HANDLE  timestamp_hdl;
-    uint32_t    padding1;
+    uint32_t    timestamp_ready;   /* region created (handle 0 is valid, so it cannot mean "not created") */
     uint32_t    padding2[17];
     uint32_t    rects_en;
     uint32_t    rects_show;
@@ -198,14 +198,17 @@ static int osd_update_timestamp(int chn, bool state, struct tm *timestamp)
     if (scale < 1) scale = 1;
     int shadow = (scale >= 2) ? 2 : 1;
 
-    if (params->timestamp_hdl == 0) {
+    if (!params->timestamp_ready) {
+        /* Hiding must never create a region: osd_free() runs during teardown */
+        if (!state) return LOCALSDK_OK;
         params->timestamp_hdl = chn * 3 + 0;
         /* Canvas fits "YYYY-MM-DD HH:MM:SS" (19 chars) + shadow margin. */
         uint32_t w = (uint32_t)(20 * 8 * scale + shadow);
         uint32_t h = (uint32_t)(8 * scale + shadow);
         w = (w + 1) & ~1u;
         h = (h + 1) & ~1u;
-        osd_region_init(params->timestamp_hdl, w, h);
+        if (osd_region_init(params->timestamp_hdl, w, h) != LOCALSDK_OK) return LOCALSDK_ERROR;
+        params->timestamp_ready = 1;
     }
 
     if (state && timestamp) {
@@ -253,6 +256,8 @@ static int osd_update_rect_multi(int chn, bool state, LOCALSDK_OSD_RECTANGLES *r
     if (!params) return LOCALSDK_ERROR;
 
     if (params->rects_hdl == 0) {
+        /* Hiding must never create the 1 MB region: osd_free() runs during teardown */
+        if (!state) return LOCALSDK_OK;
         params->rects_hdl = chn * 3 + 2;
         RGN_ATTR_S a;
         memset(&a, 0, sizeof(a));
@@ -418,6 +423,9 @@ bool osd_free(void)
                     LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "pthread_cancel(datetime_thread)");
                 else
                     LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "pthread_cancel(datetime_thread)");
+                /* Wait for it: otherwise it can still be inside an RGN call while we hide the region */
+                pthread_join(datetime_thread, NULL);
+                datetime_thread = 0;
             }
             if (result &= (osd_update_timestamp(LOCALSDK_VIDEO_PRIMARY_CHANNEL, false, NULL) == LOCALSDK_OK))
                 LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "osd_update_timestamp(false)");

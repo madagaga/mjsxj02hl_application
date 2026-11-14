@@ -299,6 +299,12 @@ void board_platform_init(void)
     }
 }
 
+void board_platform_stop(void)
+{
+    const board_cfg_t *b = &g_board_mjsxj02hl;
+    if (b->pfnDeinit) b->pfnDeinit();
+}
+
 void board_platform_deinit(void)
 {
     /* Cancel button polling thread */
@@ -518,6 +524,8 @@ static void mjsxj02hl_on_luma(HI_U8 luma)
 static void mjsxj02hl_deinit(void)
 {
     const board_cfg_t *b = &g_board_mjsxj02hl;
+    scene_deinit();      /* its thread reads the ISP and the VPSS group: stop it first */
+    board_ir_pwm(0);     /* the IR flood is a PWM channel that outlives the process */
     board_gpio_write(b->gpio_ir_led_a, 0);
     if (b->gpio_ir_led_b >= 0) board_gpio_write(b->gpio_ir_led_b, 0);
     board_gpio_write(b->gpio_ircut_a, 0);

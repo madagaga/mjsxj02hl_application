@@ -343,6 +343,36 @@ static ISP_BAYER_FORMAT_E jxf22_bayer_phase(HI_BOOL mirror, HI_BOOL flip) {
     return (ISP_BAYER_FORMAT_E)((bit1 << 1) | bit0);
 }
 
+/* How much of the ISP registration sequence has been done (sensor, then AE, then AWB). */
+#define SENSOR_REG_SENSOR  1
+#define SENSOR_REG_AE      2
+#define SENSOR_REG_ALL     3
+
+/* Undo the first `done` registration steps, in reverse order. Used by the init error
+   paths and by the normal teardown; failures are ignored (nothing more can be done). */
+static void sensor_isp_unregister(int done) {
+    ALG_LIB_S stLib;
+
+    if (done >= SENSOR_REG_ALL) {
+        memset(&stLib, 0, sizeof(stLib));
+        stLib.s32Id = 0;
+        strncpy(stLib.acLibName, HI_AWB_LIB_NAME, sizeof(stLib.acLibName) - 1);
+        HI_MPI_AWB_UnRegister(0, &stLib);
+    }
+    if (done >= SENSOR_REG_AE) {
+        memset(&stLib, 0, sizeof(stLib));
+        stLib.s32Id = 0;
+        strncpy(stLib.acLibName, HI_AE_LIB_NAME, sizeof(stLib.acLibName) - 1);
+        HI_MPI_AE_UnRegister(0, &stLib);
+    }
+    if (done >= SENSOR_REG_SENSOR && stSnsSoiSensorObj.pfnUnRegisterCallback) {
+        ALG_LIB_S stAeLib = {0}, stAwbLib = {0};
+        strncpy(stAeLib.acLibName,  HI_AE_LIB_NAME,  sizeof(stAeLib.acLibName)  - 1);
+        strncpy(stAwbLib.acLibName, HI_AWB_LIB_NAME, sizeof(stAwbLib.acLibName) - 1);
+        stSnsSoiSensorObj.pfnUnRegisterCallback(0, &stAeLib, &stAwbLib);
+    }
+}
+
 static HI_S32 sensor_isp_init(void) {
     HI_S32 result;
     ISP_PUB_ATTR_S stPubAttr;
@@ -354,11 +384,13 @@ static HI_S32 sensor_isp_init(void) {
         return HI_FAILURE;
     }
 
+    memset(&stLib, 0, sizeof(stLib));
     stLib.s32Id = 0;
     strncpy(stLib.acLibName, HI_AE_LIB_NAME, sizeof(stLib.acLibName) - 1);
     result = HI_MPI_AE_Register(0, &stLib);
     if (result != HI_SUCCESS) {
         LOGGER(LOGGER_LEVEL_ERROR, "[sensor][jxf22] HI_MPI_AE_Register failed: 0x%x", result);
+        sensor_isp_unregister(SENSOR_REG_SENSOR);
         return HI_FAILURE;
     }
 
@@ -368,12 +400,14 @@ static HI_S32 sensor_isp_init(void) {
     result = HI_MPI_AWB_Register(0, &stLib);
     if (result != HI_SUCCESS) {
         LOGGER(LOGGER_LEVEL_ERROR, "[sensor][jxf22] HI_MPI_AWB_Register failed: 0x%x", result);
+        sensor_isp_unregister(SENSOR_REG_AE);
         return HI_FAILURE;
     }
 
     result = HI_MPI_ISP_MemInit(0);
     if (result != HI_SUCCESS) {
         LOGGER(LOGGER_LEVEL_ERROR, "[sensor][jxf22] HI_MPI_ISP_MemInit failed: 0x%x", result);
+        sensor_isp_unregister(SENSOR_REG_ALL);
         return HI_FAILURE;
     }
 
@@ -390,17 +424,20 @@ static HI_S32 sensor_isp_init(void) {
     result = HI_MPI_ISP_SetPubAttr(0, &stPubAttr);
     if (result != HI_SUCCESS) {
         LOGGER(LOGGER_LEVEL_ERROR, "[sensor][jxf22] HI_MPI_ISP_SetPubAttr failed: 0x%x", result);
+        sensor_isp_unregister(SENSOR_REG_ALL);
         return HI_FAILURE;
     }
 
     result = HI_MPI_ISP_Init(0);
     if (result != HI_SUCCESS) {
         LOGGER(LOGGER_LEVEL_ERROR, "[sensor][jxf22] HI_MPI_ISP_Init failed: 0x%x", result);
+        sensor_isp_unregister(SENSOR_REG_ALL);
         return HI_FAILURE;
     }
 
     if (pthread_create(&s_ispThread, NULL, sensor_isp_thread, NULL) != 0) {
         LOGGER(LOGGER_LEVEL_ERROR, "[sensor][jxf22] Failed to create ISP thread");
+        sensor_isp_unregister(SENSOR_REG_ALL);
         return HI_FAILURE;
     }
 
@@ -468,10 +505,6 @@ void sensor_jxf22_teardown_isp(void) {
         pthread_join(s_ispThread, NULL);
         s_ispThread = 0;
     }
-    if (stSnsSoiSensorObj.pfnUnRegisterCallback) {
-        ALG_LIB_S stAeLib = {0}, stAwbLib = {0};
-        strncpy(stAeLib.acLibName,  HI_AE_LIB_NAME,  sizeof(stAeLib.acLibName)  - 1);
-        strncpy(stAwbLib.acLibName, HI_AWB_LIB_NAME, sizeof(stAwbLib.acLibName) - 1);
-        stSnsSoiSensorObj.pfnUnRegisterCallback(0, &stAeLib, &stAwbLib);
-    }
+    /* AWB, AE, then the sensor: the reverse of the registration order */
+    sensor_isp_unregister(SENSOR_REG_ALL);
 }

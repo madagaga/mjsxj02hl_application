@@ -1778,6 +1778,18 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps)
     return 0;
 }
 
+void scene_deinit(void)
+{
+    if (g_dynRun) {
+        g_dynRun = 0;
+        pthread_join(g_dynThread, NULL);   /* wakes up within a second */
+        g_dynThread = 0;
+    }
+    g_initialized = 0;
+    g_active = NULL;
+    g_dyn_force = 1;   /* a later scene_init() starts from a clean pass */
+}
+
 int scene_set_day(void)
 {
     if (!g_initialized) return -1;

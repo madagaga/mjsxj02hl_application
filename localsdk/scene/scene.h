@@ -11,6 +11,10 @@ int scene_init(const char *day_ini, const char *night_ini, HI_U32 target_fps);
  * only when the scene INI has no [dynamic_gamma] tables. Call before scene_init(). */
 void scene_set_default_gamma(const HI_U16 *curve);
 
+/* Stop the dynamic thread (it queries the ISP and the VPSS group, so call this before
+ * they are torn down). Safe to call when scene_init() did not run. */
+void scene_deinit(void);
+
 /* Apply day-mode ISP parameters (color, normal AE range). */
 int scene_set_day(void);
 

@@ -27,18 +27,27 @@ static volatile int     g_nightLightRun    = 0;
 
 /* ── Luma polling thread ─────────────────────────────────────────────────── */
 
+/* Sleep in short slices so that night_free() is not kept waiting: the thread is never
+   cancelled (a cancellation point inside an IR-cut pulse would leave the coil energized),
+   it is asked to stop and joined. */
+static void night_sleep_ms(unsigned ms)
+{
+    for (unsigned t = 0; t < ms && g_nightLightRun; t += 100)
+        usleep(100000);
+}
+
 static void *night_light_thread(void *arg)
 {
     thread_set_name("night-light");
     (void)arg;
-    usleep(NIGHT_AE_SETTLE_S * 1000000u);
+    night_sleep_ms(NIGHT_AE_SETTLE_S * 1000u);
     const board_cfg_t *board = platform_get_board_cfg();
     while (g_nightLightRun) {
         ISP_EXP_INFO_S stExp;
         if (HI_MPI_ISP_QueryExposureInfo(0, &stExp) == HI_SUCCESS)
             if (board && board->pfnOnLuma)
                 board->pfnOnLuma(stExp.u8AveLum);
-        usleep(1000000);
+        night_sleep_ms(1000);
     }
     return NULL;
 }
@@ -110,8 +119,7 @@ bool night_free(void)
     board_register_mode_change_cb(NULL);
 
     if (g_nightLightThread) {
-        g_nightLightRun = 0;
-        pthread_cancel(g_nightLightThread);
+        g_nightLightRun = 0;   /* the thread leaves at its next 100 ms slice, after any IR-cut pulse */
         pthread_join(g_nightLightThread, NULL);
         g_nightLightThread = 0;
     }

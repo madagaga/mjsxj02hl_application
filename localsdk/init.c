@@ -131,6 +131,10 @@ bool all_free() {
     if(result &= night_free()) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "night_free()");
     else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "localsdk_get_version()");
     
+    // Stop the board (scene thread, IR flood, GPIO) while the video pipeline it uses still exists
+    board_platform_stop();
+    LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "board_platform_stop()");
+
     // Free alarm
     if(result &= alarm_free()) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "alarm_free()");
     else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "localsdk_get_version()");

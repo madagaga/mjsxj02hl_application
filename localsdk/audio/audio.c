@@ -33,6 +33,7 @@ static AO_CHN    g_aoChn = 0;
 static AENC_CHN  g_aencChn = 0;
 
 static int32_t   g_audioStarted = 0;
+static int32_t   g_aencCreated  = 0;   /* AENC channel to destroy at teardown */
 static volatile int g_audioRunning = 0;
 
 #define MAX_AENC_CALLBACKS 4
@@ -257,6 +258,7 @@ static int audio_mpp_run(void)
         LOGGER(LOGGER_LEVEL_ERROR, "[audio] AENC_CreateChn failed: 0x%x", result);
         return LOCALSDK_ERROR;
     }
+    g_aencCreated = 1;
 
     /* Register RTSP output callbacks (primary + secondary) */
     g_aencCb[0] = g711_capture_primary_channel;
@@ -284,6 +286,8 @@ static int audio_mpp_stop(void)
     g_audioRunning = 0;
     if (g_audioAiThread)   { pthread_join(g_audioAiThread, NULL);   g_audioAiThread = 0; }
     if (g_audioAencThread) { pthread_join(g_audioAencThread, NULL); g_audioAencThread = 0; }
+    /* The AENC channel can only go once nothing reads from it any more */
+    if (g_aencCreated) { HI_MPI_AENC_DestroyChn(g_aencChn); g_aencCreated = 0; }
     g_audioStarted = 0;
     g_aencCbCount  = 0;
     return LOCALSDK_OK;
@@ -292,6 +296,9 @@ static int audio_mpp_stop(void)
 static int audio_mpp_deinit(void)
 {
     HI_MPI_AI_DisableVqe(g_aiDev, g_aiChn);
+    /* Channels before their devices (errors are expected when init stopped half way) */
+    HI_MPI_AI_DisableChn(g_aiDev, g_aiChn);
+    HI_MPI_AO_DisableChn(g_aoDev, g_aoChn);
     HI_MPI_AI_Disable(g_aiDev);
     HI_MPI_AO_Disable(g_aoDev);
     return LOCALSDK_OK;
