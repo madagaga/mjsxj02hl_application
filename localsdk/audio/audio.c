@@ -33,7 +33,6 @@ static AO_CHN    g_aoChn = 0;
 static AENC_CHN  g_aencChn = 0;
 
 static int32_t   g_audioStarted = 0;
-static int32_t   g_aencCreated  = 0;   /* AENC channel to destroy at teardown */
 static volatile int g_audioRunning = 0;
 
 #define MAX_AENC_CALLBACKS 4
@@ -258,7 +257,6 @@ static int audio_mpp_run(void)
         LOGGER(LOGGER_LEVEL_ERROR, "[audio] AENC_CreateChn failed: 0x%x", result);
         return LOCALSDK_ERROR;
     }
-    g_aencCreated = 1;
 
     /* Register RTSP output callbacks (primary + secondary) */
     g_aencCb[0] = g711_capture_primary_channel;
@@ -294,13 +292,10 @@ static int audio_mpp_stop(void)
         pthread_join(g_audioAencThread, NULL);
         g_audioAencThread = 0;
     }
-    /* The AENC channel can only go once nothing reads from it any more */
-    if (g_aencCreated) {
-        LOGGER(LOGGER_LEVEL_DEBUG, "[audio] destroying the AENC channel...");
-        HI_S32 ret = HI_MPI_AENC_DestroyChn(g_aencChn);
-        LOGGER(LOGGER_LEVEL_DEBUG, "[audio] AENC_DestroyChn returned 0x%x", (unsigned)ret);
-        g_aencCreated = 0;
-    }
+    /* The AENC channel is deliberately NOT destroyed here: HI_MPI_AENC_DestroyChn blocks for
+       seconds on this SDK once the threads are gone (seen on the camera, the shutdown only
+       ended through the 15 s deadline). The channel disappears with the process, and
+       audio_mpp_run() accepts an existing one (HI_ERR_AENC_EXIST) at the next start. */
     g_audioStarted = 0;
     g_aencCbCount  = 0;
     return LOCALSDK_OK;
@@ -308,11 +303,10 @@ static int audio_mpp_stop(void)
 
 static int audio_mpp_deinit(void)
 {
-    /* Channels before their devices (errors are expected when init stopped half way).
-       Each step is logged so a blocking call shows up as the last line before the hang. */
+    /* Each step is logged so a blocking call shows up as the last line before a hang. The
+       AI/AO channels are not disabled one by one (an earlier attempt was never validated):
+       disabling the devices is what the original teardown did. */
     LOGGER(LOGGER_LEVEL_DEBUG, "[audio] AI_DisableVqe -> 0x%x", (unsigned)HI_MPI_AI_DisableVqe(g_aiDev, g_aiChn));
-    LOGGER(LOGGER_LEVEL_DEBUG, "[audio] AI_DisableChn -> 0x%x", (unsigned)HI_MPI_AI_DisableChn(g_aiDev, g_aiChn));
-    LOGGER(LOGGER_LEVEL_DEBUG, "[audio] AO_DisableChn -> 0x%x", (unsigned)HI_MPI_AO_DisableChn(g_aoDev, g_aoChn));
     LOGGER(LOGGER_LEVEL_DEBUG, "[audio] AI_Disable -> 0x%x", (unsigned)HI_MPI_AI_Disable(g_aiDev));
     LOGGER(LOGGER_LEVEL_DEBUG, "[audio] AO_Disable -> 0x%x", (unsigned)HI_MPI_AO_Disable(g_aoDev));
     return LOCALSDK_OK;
@@ -358,7 +352,17 @@ bool audio_init(void)
 
 bool audio_free(void)
 {
-    LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
+    /* The shutdown log showed audio_free() entered twice, 1 ms apart, with no second all_free().
+       Two threads tearing the audio down together (joining the same thread, disabling the same
+       device) is never right: let the first one finish and say who the second one was. */
+    static volatile int s_freeing = 0;
+    if (__sync_lock_test_and_set(&s_freeing, 1)) {
+        LOGGER(LOGGER_LEVEL_WARNING, "audio_free() already running, second call skipped (thread %lu)",
+               (unsigned long) pthread_self());
+        return true;
+    }
+
+    LOGGER(LOGGER_LEVEL_DEBUG, "Function is called... (thread %lu)", (unsigned long) pthread_self());
     bool result = true;
 
     if (result &= (audio_mpp_stop() == LOCALSDK_OK))
@@ -372,5 +376,6 @@ bool audio_free(void)
         LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "audio_mpp_deinit()");
 
     LOGGER(LOGGER_LEVEL_DEBUG, "Function completed (result = %s).", (result ? "true" : "false"));
+    __sync_lock_release(&s_freeing);
     return result;
 }
