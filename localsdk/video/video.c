@@ -40,6 +40,8 @@
 #include "video.h"                 /* owns all LOCALSDK_VIDEO_* types and constants */
 #include "../platform/platform.h"  /* board_cfg_t, BOARD_* constants */
 #include "../osd/osd.h"
+#include "../audio/audio.h"        /* audio_force_cleanup */
+#include "../speaker/speaker.h"    /* speaker_free (ADEC channel + binding left by a crashed run) */
 #include "../../logger/logger.h"
 #include "../../configs/configs.h"
 #include "../../rtsp/rtsp.h"
@@ -307,19 +309,27 @@ static void video_force_cleanup(void) {
     MPP_CHN_S src, dst;
     VI_DEV viDev = 0; VI_PIPE viPipe = 0; VI_CHN viChn = 0;
 
+    /* Overlay regions first: they are attached to the VENC channels, and one left behind
+       makes the next RGN_Create fail with HI_ERR_RGN_BUSY (crash loop after an OOM kill) */
+    osd_force_cleanup();
+
+    /* Unbind VPSS→VENC BEFORE destroying the encoders (a bound channel cannot be destroyed).
+       Every pairing we may have bound: our two stream channels and the temporary JPEG snapshot
+       channel (3), which video_get_jpeg() binds to the VPSS channel of the requested stream. */
+    memset(&src, 0, sizeof(src)); memset(&dst, 0, sizeof(dst));
+    src.enModId = HI_ID_VPSS; src.s32DevId = g_vpssGrp;
+    dst.enModId = HI_ID_VENC; dst.s32DevId = 0;
+    for (int v = 0; v < 4; v++) {
+        for (c = 0; c < 4; c++) {
+            src.s32ChnId = v; dst.s32ChnId = c;
+            HI_MPI_SYS_UnBind(&src, &dst);
+        }
+    }
+
     /* VENC: stop + destroy channels 0-3 */
     for (c = 0; c < 4; c++) {
         HI_MPI_VENC_StopRecvFrame(c);
         HI_MPI_VENC_DestroyChn(c);
-    }
-
-    /* VPSS→VENC unbind (our two encode channels) */
-    memset(&src, 0, sizeof(src)); memset(&dst, 0, sizeof(dst));
-    src.enModId = HI_ID_VPSS; src.s32DevId = g_vpssGrp;
-    dst.enModId = HI_ID_VENC; dst.s32DevId = 0;
-    for (c = 0; c < 2; c++) {
-        src.s32ChnId = g_vpssChn[c]; dst.s32ChnId = g_vencChn[c];
-        HI_MPI_SYS_UnBind(&src, &dst);
     }
 
     /* VPSS stop + destroy */
@@ -338,6 +348,11 @@ static void video_force_cleanup(void) {
         HI_MPI_VI_DestroyPipe(viPipe);
         HI_MPI_VI_DisableDev(viDev);
     }
+
+    /* Audio: a crashed run leaves ADEC/AENC and the AI/AO channels and devices enabled in the
+       kernel, which the next audio_init() would trip over */
+    speaker_free();
+    audio_force_cleanup();
 
     /* ISP teardown (thread join + sensor unregister) */
     if (g_board_cfg && g_board_cfg->pfnTeardownSensorIsp)

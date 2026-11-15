@@ -411,6 +411,31 @@ bool osd_postinit(void)
     return result;
 }
 
+/* Detach and destroy every region this module may have created: handles chn*3 + 0..2 (timestamp,
+   the former logo, rectangles), attached to VENC channel chn. A region left behind by a crashed
+   run makes the next RGN_Create fail with HI_ERR_RGN_BUSY, which is not covered by the
+   HI_ERR_RGN_EXIST tolerance. Errors are ignored: most of these handles do not exist. */
+static void osd_destroy_regions(void)
+{
+    for (int chn = 0; chn < 2; chn++) {
+        MPP_CHN_S stChn;
+        memset(&stChn, 0, sizeof(stChn));
+        stChn.enModId  = HI_ID_VENC;
+        stChn.s32DevId = 0;
+        stChn.s32ChnId = chn;
+        for (int k = 0; k < 3; k++) {
+            RGN_HANDLE handle = chn * 3 + k;
+            HI_MPI_RGN_DetachFromChn(handle, &stChn);
+            HI_MPI_RGN_Destroy(handle);
+        }
+    }
+}
+
+void osd_force_cleanup(void)
+{
+    osd_destroy_regions();
+}
+
 bool osd_free(void)
 {
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
@@ -438,6 +463,15 @@ bool osd_free(void)
                 LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "osd_update_rect_multi(false)");
             else
                 LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "osd_update_rect_multi(false)");
+        }
+
+        /* Hiding is not enough: the regions stay allocated in the kernel after the process */
+        osd_destroy_regions();
+        OSD_CHANNEL_PARAMS *params = osd_get_params(LOCALSDK_VIDEO_PRIMARY_CHANNEL);
+        if (params) {
+            params->timestamp_ready = 0;
+            params->timestamp_hdl   = 0;
+            params->rects_hdl       = 0;
         }
     }
 

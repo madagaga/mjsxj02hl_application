@@ -295,6 +295,9 @@ static HI_U32 g_target_fps = 20;
 
 /* Currently active profile (day or night) for the dynamic DRC thread. */
 static const scene_params_t *g_active = NULL;
+/* Serializes apply_scene() (scene_set_day/night) with the dynamic pass (run_dynamic): they
+   share the ISP settings and the g_last_* / g_dyn_force caches. */
+static pthread_mutex_t g_sceneLock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t    g_dynThread = 0;
 static volatile int g_dynRun    = 0;
 
@@ -1636,9 +1639,14 @@ static void *scene_dyn_thread(void *arg)
     thread_set_name("scene-dyn");
     (void)arg;
     while (g_dynRun) {
+        /* g_active is read under the lock that scene_set_day/night hold while they apply a
+           scene: otherwise a pass that picked the day profile just before a switch could
+           write its day settings over the night scene that was just applied. */
+        pthread_mutex_lock(&g_sceneLock);
         const scene_params_t *p = g_active;
         if (p)
             run_dynamic(p);
+        pthread_mutex_unlock(&g_sceneLock);
         sleep(1);
     }
     return NULL;
@@ -1794,8 +1802,10 @@ int scene_set_day(void)
 {
     if (!g_initialized) return -1;
     LOGGER(LOGGER_LEVEL_INFO, "[scene] applying day scene (sat[0]=%u)", g_day.sat[0]);
+    pthread_mutex_lock(&g_sceneLock);
     g_active = &g_day;
     apply_scene(&g_day);
+    pthread_mutex_unlock(&g_sceneLock);
     return 0;
 }
 
@@ -1803,7 +1813,9 @@ int scene_set_night(void)
 {
     if (!g_initialized) return -1;
     LOGGER(LOGGER_LEVEL_INFO, "[scene] applying night scene (sat[0]=%u)", g_night.sat[0]);
+    pthread_mutex_lock(&g_sceneLock);
     g_active = &g_night;
     apply_scene(&g_night);
+    pthread_mutex_unlock(&g_sceneLock);
     return 0;
 }

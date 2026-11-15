@@ -323,11 +323,14 @@ void board_platform_deinit(void)
     HI_MPI_VI_StopPipe(pipe);
     HI_MPI_VI_DestroyPipe(pipe);
     HI_MPI_VI_DisableDev(dev);
+
+    /* Sensor ISP teardown (ISP_Exit + thread join + library unregistration) BEFORE the system
+       goes away: the ISP thread still uses SYS and VB until it has returned. Same order as
+       video_force_cleanup(). */
+    if (b->pfnTeardownSensorIsp) b->pfnTeardownSensorIsp();
+
     HI_MPI_SYS_Exit();
     HI_MPI_VB_Exit();
-
-    /* Sensor ISP teardown */
-    if (b->pfnTeardownSensorIsp) b->pfnTeardownSensorIsp();
 }
 
 void board_indicator_led(bool orange, bool blue)

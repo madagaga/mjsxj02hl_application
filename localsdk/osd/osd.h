@@ -38,6 +38,10 @@ bool osd_is_enabled(void);
 bool osd_init(void);
 bool osd_postinit(void);
 bool osd_free(void);
+
+/* Detach and destroy any region a previous (crashed) run left in the kernel. Called by the
+   video start-up cleanup, whether or not the OSD is enabled in this run. */
+void osd_force_cleanup(void);
 int  osd_rectangles_callback(LOCALSDK_ALARM_EVENT_INFO *eventInfo);
 
 #endif /* _LOCALSDK_OSD_H_ */

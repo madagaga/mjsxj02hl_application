@@ -320,6 +320,25 @@ static int audio_mpp_deinit(void)
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
+/* Best-effort undo of the audio state a crashed run left in the kernel drivers (AENC channel,
+   AI/AO channels and devices, all still enabled). Mirrors audio_mpp_stop()/audio_mpp_deinit()
+   without relying on this run's state: the board gives the device numbers. Every error is
+   expected on a clean start and ignored. The ADEC channel and its binding to AO belong to the
+   speaker module (speaker_free). */
+void audio_force_cleanup(void)
+{
+    const board_cfg_t *board = platform_get_board_cfg();
+    AUDIO_DEV ai = board ? board->ai_dev : 0;
+    AUDIO_DEV ao = board ? board->ao_dev : 0;
+
+    HI_MPI_AENC_DestroyChn(g_aencChn);
+    HI_MPI_AI_DisableVqe(ai, g_aiChn);
+    HI_MPI_AI_DisableChn(ai, g_aiChn);
+    HI_MPI_AO_DisableChn(ao, g_aoChn);
+    HI_MPI_AI_Disable(ai);
+    HI_MPI_AO_Disable(ao);
+}
+
 bool audio_is_enabled(int channel)
 {
     switch (channel) {

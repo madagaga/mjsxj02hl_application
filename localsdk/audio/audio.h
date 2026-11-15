@@ -48,6 +48,9 @@ bool audio_is_enabled(int channel);
 bool audio_init(void);
 bool audio_teardown(void);   /* not audio_free: that name collides with a libmpi.so function */
 
+/* Undo the audio state a crashed run left in the kernel (start-up cleanup, see video.c). */
+void audio_force_cleanup(void);
+
 /* AO device/channel accessors for speaker.c */
 int audio_get_ao_dev(void);
 int audio_get_ao_chn(void);
