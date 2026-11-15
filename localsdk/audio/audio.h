@@ -46,7 +46,7 @@ typedef struct {
 
 bool audio_is_enabled(int channel);
 bool audio_init(void);
-bool audio_free(void);
+bool audio_teardown(void);   /* not audio_free: that name collides with a libmpi.so function */
 
 /* AO device/channel accessors for speaker.c */
 int audio_get_ao_dev(void);

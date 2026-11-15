@@ -144,7 +144,7 @@ bool all_free() {
     else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "localsdk_get_version()");
     
     // Free audio
-    if(result &= audio_free()) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "audio_free()");
+    if(result &= audio_teardown()) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "audio_teardown()");
     else LOGGER(LOGGER_LEVEL_WARNING, "%s error!", "localsdk_get_version()");
     
     // Free OSD
