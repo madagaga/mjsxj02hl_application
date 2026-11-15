@@ -21,10 +21,24 @@
 #include "./rtsp/rtsp.h"
 #include "mpi_sys.h"
 
+// Last resort: if the teardown below never finishes, leave anyway. A process stuck half way
+// is worse than one that exits: the watchdog cannot restart it, and the next start cleans
+// the MPP state anyway (video_force_cleanup).
+#define SHUTDOWN_DEADLINE_S 15
+static void shutdown_deadline_callback(int signal) {
+    (void) signal;
+    _exit(EX_SOFTWARE);
+}
+
 // Signal callback
+static volatile int shutdown_started = 0;
 void signal_callback(int signal) {
+    // A second signal, or the same one delivered to another thread, must not run the
+    // teardown again in parallel (two threads joining the same thread, freeing twice...)
+    if(__sync_lock_test_and_set(&shutdown_started, 1)) return;
+    alarm(SHUTDOWN_DEADLINE_S); // SIGALRM -> shutdown_deadline_callback (registered in main)
     LOGGER(LOGGER_LEVEL_DEBUG, "Function is called...");
-    
+
     // Enable orange LED
     if(APP_CFG.general.led) {
         board_indicator_led(true, false);
@@ -197,6 +211,9 @@ int main(int argc, char **argv) {
             
             if(signal(SIGTERM, signal_callback) != SIG_ERR) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "signal(SIGTERM)"); // SIGTERM
             else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "signal(SIGTERM)");
+
+            if(signal(SIGALRM, shutdown_deadline_callback) != SIG_ERR) LOGGER(LOGGER_LEVEL_DEBUG, "%s success.", "signal(SIGALRM)"); // shutdown deadline
+            else LOGGER(LOGGER_LEVEL_ERROR, "%s error!", "signal(SIGALRM)");
             
             // Onboard LED indicator
             if(APP_CFG.general.led) { // Enable blue LED
