@@ -332,7 +332,10 @@ static int32_t md_mpp_init(uint32_t width, uint32_t height)
     {
         MD_ATTR_S attr;
         memset(&attr, 0, sizeof(attr));
-        attr.enAlgMode                = MD_ALG_MODE_BG;
+        /* Same attributes as the original (SAMPLE_IVE_Md_Init in liblocalsdk.so): frame
+           difference against the previous processed frame (REF), 8-connected labelling.
+           Half the cost per frame of the background model (BG): 8 ms against 18 ms. */
+        attr.enAlgMode                = MD_ALG_MODE_REF;
         attr.enSadMode                = IVE_SAD_MODE_MB_4X4;
         attr.enSadOutCtrl             = IVE_SAD_OUT_CTRL_THRESH;
         attr.u32Width                 = width;
@@ -346,7 +349,7 @@ static int32_t md_mpp_init(uint32_t width, uint32_t height)
             if (s > 255) s = 255;
             attr.u16SadThr = (HI_U16)((-3 * s) / 2 + 550);
         }
-        attr.stCclCtrl.enMode         = IVE_CCL_MODE_4C;
+        attr.stCclCtrl.enMode         = IVE_CCL_MODE_8C;
         attr.stCclCtrl.u16InitAreaThr = 16;
         attr.stCclCtrl.u16Step        = 4;
         attr.stAddCtrl.u0q16X         = 32768;
@@ -496,6 +499,7 @@ static void md_process_and_dispatch(VIDEO_FRAME_INFO_S *frame_info)
 /* ── IVP detection thread ─────────────────────────────────────────────────── */
 
 #define IVP_OBJ_CAPACITY 16
+#define IVP_PASS_PAUSE_US 50000
 
 static int32_t ivp_process_and_dispatch(VIDEO_FRAME_INFO_S *frame)
 {
@@ -571,6 +575,14 @@ static void *ivp_detect_thread(void *arg)
         if (g_mdInitialized) md_process_and_dispatch(&frame);
         ivp_process_and_dispatch(&frame);
         HI_MPI_VPSS_ReleaseChnFrame(video_get_vpss_grp(), LOCALSDK_VIDEO_SECONDARY_CHANNEL, &frame);
+
+        /* The original detection thread (sample_algo_process_pthread) sleeps 50 ms before
+           it looks for the next frame. With about 70 ms of IVP + MD work per pass that is
+           8-9 passes per second (the original /proc/umap/ivp reads Framerate 9) and the
+           IVP engine idles about 40 % of the time, instead of running back to back at
+           15 fps. The frames queued meanwhile are drained above, so the next pass still
+           works on the freshest one. */
+        usleep(IVP_PASS_PAUSE_US);
     }
     LOGGER(LOGGER_LEVEL_DEBUG, "[alarm][ivp] detection thread stopped");
     return NULL;
