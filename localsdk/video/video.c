@@ -870,10 +870,15 @@ static int video_get_jpeg_locked(int chn, char *file) {
 
     if (chn < 0 || chn > 1 || !file) return LOCALSDK_ERROR;
 
-    // Snapshot size follows the channel's configured resolution
+    /* Snapshot size follows the channel's configured resolution. The options are only
+       filled in the main process: "mjsxj02hl --get-image" (the web interface) runs in a
+       separate short-lived process where they are still zero, so fall back to the board's
+       fixed size for that channel instead of failing. */
     LOCALSDK_VIDEO_OPTIONS *snapOpts = video_get_options(chn);
-    if (!snapOpts || video_resolution_to_size((int)snapOpts->resolution, &stSize) != LOCALSDK_OK)
-        return LOCALSDK_ERROR;
+    if (!snapOpts || video_resolution_to_size((int)snapOpts->resolution, &stSize) != LOCALSDK_OK) {
+        stSize.u32Width  = (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) ? BOARD_WIDTH  : BOARD_SUB_WIDTH;
+        stSize.u32Height = (chn == LOCALSDK_VIDEO_PRIMARY_CHANNEL) ? BOARD_HEIGHT : BOARD_SUB_HEIGHT;
+    }
 
     fp = fopen(file, "wb");
     if (!fp) return LOCALSDK_ERROR;
